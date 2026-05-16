@@ -1,0 +1,702 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono:
+    "SF Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  --font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@layer base {
+  :root {
+    --app-bg: #ffffff;
+    --border: rgb(27 31 36 / 0.12);
+    --border-strong: rgb(27 31 36 / 0.2);
+    --browser-bg: #f6f6f5;
+    --control: rgb(27 31 36 / 0.06);
+    --control-hover: rgb(27 31 36 / 0.1);
+    --green: #00a783;
+    --muted: rgb(27 31 36 / 0.58);
+    --panel: #f6f8fa;
+    --red: #ff264a;
+    --shadow: rgb(27 31 36 / 0.08);
+    --sidebar-bg: #fafafa;
+    --sidebar-text: rgb(27 31 36 / 0.72);
+    --surface: #ffffff;
+    --text: #15191d;
+    --yellow: #9a6700;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --app-bg: #111111;
+      --border: rgb(235 235 235 / 0.1);
+      --border-strong: rgb(235 235 235 / 0.18);
+      --browser-bg: #181818;
+      --control: rgb(235 235 235 / 0.07);
+      --control-hover: rgb(235 235 235 / 0.11);
+      --green: #68d596;
+      --muted: rgb(235 235 235 / 0.5);
+      --panel: #171717;
+      --red: #ff817d;
+      --shadow: rgb(0 0 0 / 0.5);
+      --sidebar-bg: rgb(31 31 31 / 0.72);
+      --sidebar-text: rgb(235 235 235 / 0.78);
+      --surface: #1c1c1c;
+      --text: rgb(235 235 235);
+      --yellow: #e3b365;
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    background: var(--app-bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    margin: 0;
+    overflow: hidden;
+  }
+
+  button {
+    font: inherit;
+  }
+}
+
+.delta-shell {
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.browser-bar {
+  -webkit-app-region: drag;
+  align-items: center;
+  background: var(--browser-bg);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 0 18px 0 14px;
+}
+
+.browser-bar.desktop-window-chrome {
+  padding-left: 88px;
+}
+
+.browser-location {
+  align-items: center;
+  color: var(--text);
+  display: grid;
+  font-size: 17px;
+  font-weight: 500;
+  gap: 14px;
+  grid-template-columns: 25px minmax(0, max-content);
+  height: 100%;
+  line-height: 1;
+  min-width: 0;
+}
+
+.browser-location span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mark {
+  color: var(--text);
+  display: block;
+  height: 25px;
+  width: 25px;
+}
+
+.browser-tools {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.bar-icon-button,
+.top-action-button {
+  -webkit-app-region: no-drag;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+
+.bar-icon-button {
+  border-radius: 6px;
+}
+
+.app-action-icon {
+  display: block;
+  height: 18px;
+  pointer-events: none;
+  width: 18px;
+}
+
+.top-action-button {
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  gap: 7px;
+  height: 32px;
+  padding: 0 11px;
+  width: auto;
+}
+
+.bar-icon-button:not(:disabled):hover,
+.top-action-button:hover {
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.bar-icon-button:disabled,
+.top-action-button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.bar-icon-button:focus-visible,
+.top-action-button:focus-visible,
+.sidebar-tool-button:focus-visible {
+  outline: 2px solid #149dfb;
+  outline-offset: 2px;
+}
+
+.delta-app {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-shell {
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-chrome {
+  align-items: center;
+  display: flex;
+  flex: none;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 18px 8px;
+}
+
+.sidebar-chrome-group {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+}
+
+.sidebar-tool-button {
+  -webkit-app-region: no-drag;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--sidebar-text) 82%, black);
+  cursor: pointer;
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  padding: 0;
+  width: 26px;
+}
+
+.sidebar-tool-button:hover {
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.sidebar-tool-button.active {
+  background: var(--control);
+  color: var(--text);
+}
+
+.sidebar-tool-button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.sidebar-tree-region {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 12px 0 8px;
+}
+
+.file-tree-host {
+  height: 100%;
+  min-height: 0;
+}
+
+.file-tree-host file-tree-container {
+  display: block;
+  height: 100%;
+}
+
+.sidebar-empty {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  padding: 12px;
+}
+
+.diff-stats-panel {
+  border-top: 1px solid var(--border);
+  flex: none;
+  padding: 8px 12px 10px;
+}
+
+.diff-stats-list {
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+}
+
+.diff-stats-list div {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: center;
+  min-height: 38px;
+  min-width: 0;
+  padding: 2px 9px 2px 10px;
+}
+
+.diff-stats-list div + div {
+  border-left: 1px solid var(--border);
+}
+
+.diff-stats-list dt,
+.diff-stats-list dd {
+  margin: 0;
+}
+
+.diff-stats-list dt {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-stats-list dd {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1.1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-stats-list dd.positive {
+  color: var(--green);
+}
+
+.diff-stats-list dd.negative {
+  color: var(--red);
+}
+
+.review-shell {
+  background: var(--surface);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+}
+
+.code-view-host {
+  display: block;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgb(128 128 128 / 0.72) transparent;
+  scrollbar-width: thin;
+  width: 100%;
+}
+
+.code-view-host::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.code-view-host::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.code-view-host::-webkit-scrollbar-thumb {
+  background: rgb(128 128 128 / 0.72);
+  border-radius: 999px;
+}
+
+.code-view-host::-webkit-scrollbar-thumb:hover {
+  background: rgb(128 128 128 / 0.86);
+}
+
+.code-view-host diffs-container {
+  background: var(--surface);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+  display: block;
+  overflow: hidden;
+}
+
+.code-view-host diffs-container:first-child {
+  margin-top: 0;
+}
+
+.code-view-host [slot="header-custom"] {
+  display: block;
+  min-width: 0;
+}
+
+.delta-file-header {
+  align-items: center;
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--border);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  min-height: 48px;
+  padding: 7px 18px 7px 14px;
+}
+
+.delta-file-header:hover {
+  background: color-mix(in srgb, var(--control) 52%, var(--surface));
+}
+
+.delta-file-header:focus-visible {
+  outline: 2px solid #149dfb;
+  outline-offset: -2px;
+}
+
+.delta-file-header.viewed .delta-file-path {
+  color: var(--muted);
+}
+
+.delta-file-toggle,
+.delta-viewed-button {
+  -webkit-app-region: no-drag;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.delta-file-toggle {
+  border-radius: 6px;
+  height: 26px;
+  width: 26px;
+}
+
+.delta-chevron {
+  border-bottom: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  display: inline-block;
+  height: 8px;
+  transform: rotate(45deg) translateY(-2px);
+  width: 8px;
+}
+
+.delta-file-toggle[data-state="collapsed"] .delta-chevron {
+  transform: rotate(-45deg) translate(-1px, 0);
+}
+
+.delta-viewed-button:hover {
+  background: var(--control-hover);
+}
+
+.delta-file-heading {
+  min-width: 0;
+}
+
+.delta-file-path,
+.delta-file-old-path {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delta-file-path {
+  align-items: center;
+  display: flex;
+  font-size: 15px;
+  gap: 12px;
+}
+
+.delta-file-old-path {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.delta-file-icon {
+  border: 2px solid #149dfb;
+  border-radius: 7px;
+  display: inline-block;
+  flex: none;
+  height: 18px;
+  position: relative;
+  width: 18px;
+}
+
+.delta-file-icon::after {
+  background: #149dfb;
+  border-radius: 999px;
+  content: "";
+  height: 6px;
+  left: 4px;
+  position: absolute;
+  top: 4px;
+  width: 6px;
+}
+
+.delta-status-badge,
+.delta-section-badge,
+.delta-viewed-button {
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.delta-file-stats {
+  align-items: center;
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 650;
+  gap: 12px;
+  justify-content: flex-end;
+  letter-spacing: 0;
+  min-width: 72px;
+}
+
+.delta-file-stats .positive {
+  color: var(--green);
+}
+
+.delta-file-stats .negative {
+  color: var(--red);
+}
+
+.delta-status-badge,
+.delta-section-badge {
+  background: var(--control);
+  color: var(--muted);
+  padding: 5px 8px;
+}
+
+.delta-status-badge.added,
+.delta-status-badge.untracked,
+.delta-section-badge.unstaged {
+  color: var(--green);
+}
+
+.delta-status-badge.deleted {
+  color: var(--red);
+}
+
+.delta-status-badge.renamed,
+.delta-section-badge.staged {
+  color: var(--yellow);
+}
+
+.delta-viewed-button {
+  border: 1px solid var(--border-strong);
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.delta-viewed-button.active {
+  border-color: color-mix(in srgb, var(--green) 48%, transparent);
+  color: var(--green);
+}
+
+.delta-viewed-check {
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  height: 13px;
+  width: 13px;
+}
+
+.delta-viewed-button.active .delta-viewed-check {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.state-panel {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  left: 50%;
+  max-width: min(560px, calc(100vw - 48px));
+  padding: 24px;
+  position: absolute;
+  text-align: center;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.state-panel span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.spin {
+  animation: spin 850ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (max-width: 880px) {
+  .browser-bar {
+    gap: 10px;
+    padding-right: 10px;
+  }
+
+  .browser-bar.desktop-window-chrome {
+    padding-left: 92px;
+  }
+
+  .browser-tools {
+    gap: 8px;
+  }
+
+  .top-action-button {
+    padding: 0 9px;
+  }
+
+  .delta-app {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .diff-stats-list {
+    margin-left: 0;
+  }
+
+  .review-shell {
+    padding: 8px;
+  }
+
+  .delta-file-header {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+
+  .delta-section-badge,
+  .delta-status-badge {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .delta-shell {
+    grid-template-rows: 44px minmax(0, 1fr);
+  }
+
+  .browser-bar.desktop-window-chrome {
+    padding-left: 88px;
+  }
+
+  .browser-location {
+    font-size: 15px;
+    gap: 9px;
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .app-mark {
+    height: 26px;
+    width: 26px;
+  }
+
+  .top-action-button span {
+    display: none;
+  }
+
+  .delta-app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 280px minmax(0, 1fr);
+  }
+
+  .sidebar-shell {
+    border-bottom: 1px solid var(--border);
+    border-right: 0;
+  }
+
+  .sidebar-chrome {
+    padding: 8px 10px 6px;
+  }
+
+  .diff-stats-panel {
+    display: none;
+  }
+
+  .review-shell {
+    padding: 8px;
+  }
+}

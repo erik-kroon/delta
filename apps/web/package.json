@@ -1,0 +1,28 @@
+{
+  "name": "web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "check-types": "tsc --noEmit",
+    "serve": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pierre/diffs": "1.2.0-beta.4",
+    "@pierre/trees": "1.0.0-beta.3",
+    "@tailwindcss/vite": "^4.2.2",
+    "@tanstack/router-plugin": "^1.167.22",
+    "@tanstack/solid-router": "^1.168.20",
+    "electrobun": "^1.15.1",
+    "lucide-solid": "^1.8.0",
+    "solid-js": "^1.9.12",
+    "tailwindcss": "^4.2.2"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "^8.0.8",
+    "vite-plugin-solid": "^2.11.12"
+  }
+}
