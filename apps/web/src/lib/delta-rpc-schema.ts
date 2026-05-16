@@ -1,5 +1,6 @@
 import type {
   OpenRepositoryTarget,
+  RepositoryFile,
   RepositoryHistory,
   RepositoryState,
   ReviewSource,
@@ -16,6 +17,10 @@ export type DeltaRPCSchema = {
       getRepositoryState: {
         params: { source?: ReviewSource } | undefined;
         response: RepositoryState;
+      };
+      getRepositoryFile: {
+        params: { path: string; source?: ReviewSource };
+        response: RepositoryFile;
       };
       showInFolder: {
         params: { path: string };

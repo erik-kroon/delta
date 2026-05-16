@@ -4,6 +4,7 @@ import type { DeltaRPCSchema } from "../../../web/src/lib/delta-rpc-schema";
 import {
   listRepositoryHistory,
   openRepositoryTarget,
+  readRepositoryFile,
   readRepositoryState,
   showInRepositoryFolder,
 } from "./git-state";
@@ -35,6 +36,7 @@ const rpc = BrowserView.defineRPC<DeltaRPCSchema>({
     messages: {},
     requests: {
       getRepositoryHistory: ({ limit } = {}) => listRepositoryHistory(launchPath, limit),
+      getRepositoryFile: ({ path, source }) => readRepositoryFile(launchPath, path, source),
       getRepositoryState: ({ source } = {}) => readRepositoryState(launchPath, source),
       showInFolder: ({ path }) =>
         showInRepositoryFolder(launchPath, path, Utils.showItemInFolder, Utils.openPath),

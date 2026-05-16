@@ -2,40 +2,50 @@ import {
   CodeView,
   DEFAULT_CODE_VIEW_FILE_METRICS,
   DEFAULT_CODE_VIEW_LAYOUT,
-  parsePatchFiles,
-  type CodeViewItem,
   type CodeViewOptions,
-  type CodeViewScrollTarget,
-  type FileDiffMetadata,
-  type SelectionSide,
   type SmoothScrollSettings,
 } from "@pierre/diffs";
-import { FileTree, type GitStatusEntry } from "@pierre/trees";
+import { FileTree, type FileTreeRowDecoration, type GitStatusEntry } from "@pierre/trees";
+import { createHotkey } from "@tanstack/solid-hotkeys";
 import { createFileRoute } from "@tanstack/solid-router";
 import {
+  AlignJustify,
   Check,
-  GitBranch,
-  MessageCircle,
+  ListOrdered,
+  PaintBucket,
   RefreshCcw,
   Search,
   Settings,
   SplitSquareVertical,
+  WrapText,
 } from "lucide-solid";
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 
-import { deltaClient } from "@/lib/delta-client";
-import type { ChangedFile, DiffSection, GitFileStatus, RepositoryState } from "@/lib/repository";
+import { KbdShortcut } from "@/components/kbd";
+import { buildCodeViewItemModel, diffItemId } from "@/lib/code-view-items";
+import { createReviewWorkspace, type ScrollTarget } from "@/lib/review-workspace";
+import type { OpenRepositoryTarget } from "@/lib/repository";
+import type { ChangedFile, DiffSection, GitFileStatus, RepositoryFile } from "@/lib/repository";
 
 export const Route = createFileRoute("/")({
   component: DeltaApp,
 });
 
-type ScrollTarget = {
-  path: string;
-  request: number;
+type DiffViewPreferences = {
+  backgrounds: boolean;
+  diffStyle: "split" | "unified";
+  lineNumbers: boolean;
+  wordWrap: boolean;
 };
 
-type DiffScrollTarget = Extract<CodeViewScrollTarget, { type: "item" | "line" }>;
+const defaultDiffViewPreferences: DiffViewPreferences = {
+  backgrounds: true,
+  diffStyle: "split",
+  lineNumbers: true,
+  wordWrap: false,
+};
+
+const diffViewPreferencesStorageKey = "delta:diff-view-preferences";
 
 const sectionLabel: Record<DiffSection["kind"], string> = {
   commit: "Commit",
@@ -60,20 +70,30 @@ const codeViewLayout = {
 
 const codeViewItemMetrics = {
   ...DEFAULT_CODE_VIEW_FILE_METRICS,
-  diffHeaderHeight: 48,
+  diffHeaderHeight: 44,
   lineHeight: 23,
 };
 
 const codeViewSmoothScrollSettings = {
-  omega: 0.018,
-  positionEpsilon: 0.5,
-  velocityEpsilon: 0.05,
+  omega: 0.05,
+  positionEpsilon: 0.75,
+  velocityEpsilon: 0.08,
 } satisfies SmoothScrollSettings;
 
-const codeViewScrollOverscan = 8_000;
+const codeViewScrollOverscan = 2_400;
 
-const parsedSectionDiffs = new WeakMap<DiffSection, FileDiffMetadata>();
 const patchLineCounts = new WeakMap<DiffSection, { additions: number; deletions: number }>();
+
+type ScrollPerfResult = {
+  averageFrameMs: number;
+  droppedFrames: number;
+  durationMs: number;
+  frames: number;
+  longTasks: number;
+  maxFrameMs: number;
+  p95FrameMs: number;
+  scrollDistance: number;
+};
 
 const codeViewUnsafeCSS = `
   :host {
@@ -107,7 +127,7 @@ const codeViewUnsafeCSS = `
 
   [data-diffs-header='custom'] {
     background: var(--surface);
-    min-height: 48px;
+    min-height: 44px;
     position: relative;
     z-index: 2;
   }
@@ -163,6 +183,26 @@ function countSectionPatchLines(section: DiffSection) {
   return counts;
 }
 
+function countFilePatchLines(file: ChangedFile) {
+  let additions = 0;
+  let deletions = 0;
+
+  for (const section of file.sections) {
+    const counts = countSectionPatchLines(section);
+    additions += counts.additions;
+    deletions += counts.deletions;
+  }
+
+  return { additions, deletions };
+}
+
+function formatFileStatsText(counts: { additions: number; deletions: number }) {
+  const parts = [];
+  if (counts.additions > 0) parts.push(`+${formatCount(counts.additions)}`);
+  if (counts.deletions > 0) parts.push(`-${formatCount(counts.deletions)}`);
+  return parts.join(" ");
+}
+
 function viewedStorageKey(root: string) {
   return `delta:viewed:${root}`;
 }
@@ -182,90 +222,138 @@ function writeViewed(root: string, viewed: Record<string, string>) {
   localStorage.setItem(viewedStorageKey(root), JSON.stringify(viewed));
 }
 
-function itemId(section: DiffSection) {
-  return `diff:${section.id}`;
+function isDiffViewPreferences(value: unknown): value is Partial<DiffViewPreferences> {
+  if (!value || typeof value !== "object") return false;
+  const preferences = value as Partial<DiffViewPreferences>;
+  return (
+    (preferences.diffStyle === undefined ||
+      preferences.diffStyle === "split" ||
+      preferences.diffStyle === "unified") &&
+    (preferences.backgrounds === undefined || typeof preferences.backgrounds === "boolean") &&
+    (preferences.lineNumbers === undefined || typeof preferences.lineNumbers === "boolean") &&
+    (preferences.wordWrap === undefined || typeof preferences.wordWrap === "boolean")
+  );
 }
 
-function firstChangedLineTarget(id: string, fileDiff: FileDiffMetadata): DiffScrollTarget {
-  const firstHunk = fileDiff.hunks[0];
-  if (!firstHunk) return { behavior: "smooth", id, type: "item" };
+function readDiffViewPreferences() {
+  if (typeof localStorage === "undefined") return defaultDiffViewPreferences;
 
-  const side: SelectionSide = firstHunk.additionCount > 0 ? "additions" : "deletions";
-  return {
-    align: "start",
-    behavior: "smooth",
-    id,
-    lineNumber: side === "additions" ? firstHunk.additionStart : firstHunk.deletionStart,
-    offset: 8,
-    side,
-    type: "line",
-  };
+  try {
+    const stored = JSON.parse(localStorage.getItem(diffViewPreferencesStorageKey) ?? "null");
+    if (!isDiffViewPreferences(stored)) return defaultDiffViewPreferences;
+    return { ...defaultDiffViewPreferences, ...stored };
+  } catch {
+    return defaultDiffViewPreferences;
+  }
 }
 
-function createBinaryFileDiff(file: ChangedFile, section: DiffSection): FileDiffMetadata {
-  return {
-    additionLines: ["Binary file changed\n"],
-    cacheKey: `binary:${file.fingerprint}:${section.id}`,
-    deletionLines: [],
-    hunks: [
-      {
-        additionCount: 1,
-        additionLineIndex: 0,
-        additionLines: 1,
-        additionStart: 1,
-        collapsedBefore: 0,
-        deletionCount: 0,
-        deletionLineIndex: 0,
-        deletionLines: 0,
-        deletionStart: 0,
-        hunkContent: [
-          {
-            additionLineIndex: 0,
-            additions: 1,
-            deletionLineIndex: 0,
-            deletions: 0,
-            type: "change",
-          },
-        ],
-        hunkSpecs: "@@ -0,0 +1 @@\n",
-        noEOFCRAdditions: false,
-        noEOFCRDeletions: false,
-        splitLineCount: 1,
-        splitLineStart: 0,
-        unifiedLineCount: 1,
-        unifiedLineStart: 0,
-      },
-    ],
-    isPartial: true,
-    name: file.path,
-    prevName: file.oldPath,
-    splitLineCount: 1,
-    type: file.status === "deleted" ? "deleted" : file.status === "added" ? "new" : "change",
-    unifiedLineCount: 1,
-  };
+function writeDiffViewPreferences(preferences: DiffViewPreferences) {
+  localStorage.setItem(diffViewPreferencesStorageKey, JSON.stringify(preferences));
 }
 
-function parseSectionDiff(file: ChangedFile, section: DiffSection): FileDiffMetadata {
-  const cached = parsedSectionDiffs.get(section);
-  if (cached) return cached;
+function activeElementDeep(root: Document | ShadowRoot = document): Element | null {
+  const activeElement = root.activeElement;
+  if (!activeElement?.shadowRoot) return activeElement;
+  return activeElementDeep(activeElement.shadowRoot) ?? activeElement;
+}
 
-  let parsedDiff: FileDiffMetadata;
-  if (section.binary) {
-    parsedDiff = createBinaryFileDiff(file, section);
-    parsedSectionDiffs.set(section, parsedDiff);
-    return parsedDiff;
+function isEditableShortcutTarget(target: EventTarget | null) {
+  const element = target instanceof Element ? target : activeElementDeep();
+  const focusedElement = activeElementDeep();
+  if (!element && !focusedElement) return false;
+
+  const interactiveSelector =
+    "input, textarea, select, button, a[href], [contenteditable='true'], [role='button'], [role='menuitem'], [role='textbox']";
+
+  return [element, focusedElement].some((candidate) =>
+    Boolean(candidate?.closest(interactiveSelector)),
+  );
+}
+
+function shouldRunScrollPerfBenchmark() {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("delta-scroll-perf") === "1";
+}
+
+function publishScrollPerfResult(result: ScrollPerfResult) {
+  console.table(result);
+  (
+    window as Window & {
+      __DELTA_SCROLL_PERF__?: ScrollPerfResult;
+    }
+  ).__DELTA_SCROLL_PERF__ = result;
+  window.dispatchEvent(new CustomEvent("delta-scroll-perf", { detail: result }));
+}
+
+function runScrollPerfBenchmark(container: HTMLElement) {
+  const params = new URLSearchParams(window.location.search);
+  const durationMs = Number(params.get("duration") ?? 2_000);
+  const startTop = container.scrollTop;
+  const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0);
+  const scrollDistance = Math.min(maxScrollTop, Number(params.get("distance") ?? 8_000));
+  const targetTop = Math.min(startTop + scrollDistance, maxScrollTop);
+  const frameTimes: number[] = [];
+  let animationFrame = 0;
+  let lastFrameTime = 0;
+  let longTasks = 0;
+
+  const observer =
+    "PerformanceObserver" in window
+      ? new PerformanceObserver((list) => {
+          longTasks += list.getEntries().length;
+        })
+      : undefined;
+
+  try {
+    observer?.observe({ entryTypes: ["longtask"] });
+  } catch {
+    observer?.disconnect();
   }
 
-  const parsedFile = parsePatchFiles(section.patch, section.id)[0]?.files[0];
-  if (!parsedFile) {
-    parsedDiff = createBinaryFileDiff(file, section);
-    parsedSectionDiffs.set(section, parsedDiff);
-    return parsedDiff;
-  }
+  const finish = () => {
+    observer?.disconnect();
+    const sortedFrameTimes = [...frameTimes].sort((a, b) => a - b);
+    const frameSum = frameTimes.reduce((sum, frameTime) => sum + frameTime, 0);
+    const result: ScrollPerfResult = {
+      averageFrameMs: Number((frameSum / Math.max(frameTimes.length, 1)).toFixed(2)),
+      droppedFrames: frameTimes.filter((frameTime) => frameTime > 20).length,
+      durationMs,
+      frames: frameTimes.length,
+      longTasks,
+      maxFrameMs: Number(Math.max(0, ...frameTimes).toFixed(2)),
+      p95FrameMs: Number(
+        (sortedFrameTimes[Math.floor(sortedFrameTimes.length * 0.95)] ?? 0).toFixed(2),
+      ),
+      scrollDistance: Math.round(targetTop - startTop),
+    };
+    publishScrollPerfResult(result);
+  };
 
-  parsedDiff = { ...parsedFile, cacheKey: `${file.fingerprint}:${section.id}` };
-  parsedSectionDiffs.set(section, parsedDiff);
-  return parsedDiff;
+  const start = (startTime: number) => {
+    lastFrameTime = startTime;
+    const step = (time: number) => {
+      frameTimes.push(time - lastFrameTime);
+      lastFrameTime = time;
+
+      const progress = Math.min((time - startTime) / durationMs, 1);
+      container.scrollTop = startTop + (targetTop - startTop) * progress;
+
+      if (progress < 1) {
+        animationFrame = window.requestAnimationFrame(step);
+        return;
+      }
+
+      finish();
+    };
+
+    animationFrame = window.requestAnimationFrame(step);
+  };
+
+  animationFrame = window.requestAnimationFrame(start);
+  return () => {
+    window.cancelAnimationFrame(animationFrame);
+    observer?.disconnect();
+  };
 }
 
 function createFileHeader({
@@ -307,7 +395,6 @@ function createFileHeader({
 
   const path = document.createElement("div");
   path.className = "delta-file-path";
-  path.innerHTML = '<span aria-hidden class="delta-file-icon"></span>';
   path.append(document.createTextNode(file.path));
   heading.append(path);
 
@@ -350,18 +437,63 @@ function createFileHeader({
   return header;
 }
 
+function colorizeFileTreeStats(host: HTMLElement) {
+  const container = host.querySelector("file-tree-container");
+  const root = container?.shadowRoot;
+  if (!root) return () => {};
+
+  const enhance = () => {
+    for (const stat of root.querySelectorAll<HTMLElement>(
+      "[data-item-section='decoration'] > span",
+    )) {
+      const text = stat.textContent?.trim() ?? "";
+      if (stat.dataset.deltaStatsEnhanced === text) continue;
+
+      const match = text.match(/^(\+\S+)?(?:\s+(-\S+))?$/);
+      if (!match || (!match[1] && !match[2])) continue;
+
+      stat.replaceChildren();
+      if (match[1]) {
+        const additions = document.createElement("span");
+        additions.className = "positive";
+        additions.textContent = match[1];
+        stat.append(additions);
+      }
+      if (match[2]) {
+        if (match[1]) stat.append(document.createTextNode(" "));
+        const deletions = document.createElement("span");
+        deletions.className = "negative";
+        deletions.textContent = match[2];
+        stat.append(deletions);
+      }
+      stat.dataset.deltaStatsEnhanced = text;
+    }
+  };
+
+  enhance();
+
+  const observer = new MutationObserver(enhance);
+  observer.observe(root, { childList: true, subtree: true });
+  return () => observer.disconnect();
+}
+
 function FileTreePane(props: {
   files: ReadonlyArray<ChangedFile>;
   onSelectPath: (path: string) => void;
+  searchQuery: string;
   selectedPath: string | null;
+  treeFiles: ReadonlyArray<string>;
 }) {
   let host: HTMLDivElement | undefined;
   let tree: FileTree | undefined;
   let suppressSelectionChange = false;
 
-  const paths = createMemo(() => props.files.map((file) => file.path));
+  const paths = createMemo(() => props.treeFiles);
   const gitStatus = createMemo(() =>
     props.files.map((file) => ({ path: file.path, status: statusForTree[file.status] })),
+  );
+  const changedFilesByPath = createMemo(
+    () => new Map(props.files.map((file) => [file.path, file])),
   );
 
   onMount(() => {
@@ -369,6 +501,7 @@ function FileTreePane(props: {
 
     tree = new FileTree({
       flattenEmptyDirectories: true,
+      fileTreeSearchMode: "hide-non-matches",
       gitStatus: gitStatus(),
       icons: { colored: true, set: "complete" },
       initialExpansion: "open",
@@ -380,6 +513,20 @@ function FileTreePane(props: {
         if (path) props.onSelectPath(path);
       },
       paths: paths(),
+      renderRowDecoration({ row }): FileTreeRowDecoration | null {
+        if (row.kind !== "file") return null;
+
+        const file = changedFilesByPath().get(row.path);
+        if (!file) return null;
+
+        const text = formatFileStatsText(countFilePatchLines(file));
+        if (!text) return null;
+
+        return {
+          text,
+          title: `${file.path}: ${text}`,
+        };
+      },
       unsafeCSS: `
         :host {
           --trees-bg-override: transparent;
@@ -437,18 +584,73 @@ function FileTreePane(props: {
           min-width: 0;
         }
 
+        [data-item-section='decoration'] {
+          align-items: center;
+          color: var(--muted);
+          flex: 0 0 54px;
+          font-family: var(--font-mono);
+          font-size: 12px;
+          font-variant-numeric: tabular-nums;
+          font-weight: 650;
+          justify-content: flex-end;
+          letter-spacing: 0;
+          min-width: 54px;
+          padding-inline-start: 8px;
+        }
+
+        [data-item-section='decoration'] > span {
+          gap: 6px;
+          width: 100%;
+        }
+
+        [data-item-section='decoration'] .positive {
+          color: var(--green);
+        }
+
+        [data-item-section='decoration'] .negative {
+          color: var(--red);
+        }
+
+        [data-item-section='decoration'] .positive + .negative {
+          margin-left: 6px;
+        }
+
+        [data-item-git-status='added'] > [data-item-section='decoration'],
+        [data-item-git-status='untracked'] > [data-item-section='decoration'] {
+          color: var(--green);
+        }
+
+        [data-item-git-status='deleted'] > [data-item-section='decoration'] {
+          color: var(--red);
+        }
+
+        [data-item-type='folder'] [data-item-section='decoration'] {
+          display: none;
+        }
+
         [data-item-git-status] > [data-item-section='git'] {
+          flex: 0 0 18px;
           font-size: 13px;
+          justify-content: flex-end;
+          width: 18px;
         }
       `,
     });
     tree.render({ containerWrapper: host });
+    const stopColorizingStats = colorizeFileTreeStats(host);
+    onCleanup(stopColorizingStats);
   });
 
   createEffect(() => {
     if (!tree) return;
     tree.resetPaths(paths());
     tree.setGitStatus(gitStatus());
+  });
+
+  createEffect(() => {
+    if (!tree) return;
+    const query = props.searchQuery.trim();
+    tree.setSearch(query.length > 0 ? query : null);
   });
 
   createEffect(() => {
@@ -480,10 +682,64 @@ function FileTreePane(props: {
   );
 }
 
-function BrowserBar(props: { onOpenRepository: () => void; root: string | undefined }) {
+function PreferenceSwitch(props: {
+  checked: boolean;
+  icon: typeof PaintBucket;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  const Icon = props.icon;
+
+  return (
+    <label class="diff-settings-row">
+      <span class="diff-settings-label">
+        <Icon size={15} aria-hidden />
+        <span>{props.label}</span>
+      </span>
+      <input
+        type="checkbox"
+        checked={props.checked}
+        onChange={(event) => props.onChange(event.currentTarget.checked)}
+      />
+    </label>
+  );
+}
+
+function BrowserBar(props: {
+  onOpenRepository: (target: OpenRepositoryTarget) => void;
+  onToggleDiffStyle: () => void;
+  onUpdatePreferences: (preferences: Partial<DiffViewPreferences>) => void;
+  preferences: DiffViewPreferences;
+  root: string | undefined;
+}) {
+  let settingsButton: HTMLButtonElement | undefined;
+  let settingsPopover: HTMLDivElement | undefined;
   const label = createMemo(() => repositoryName(props.root));
   const isDesktopShell = typeof window !== "undefined" && "__electrobun" in window;
   const actionDisabled = () => !props.root;
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const diffStyleLabel = createMemo(() =>
+    props.preferences.diffStyle === "split" ? "Split view" : "Unified view",
+  );
+
+  createEffect(() => {
+    if (!settingsOpen()) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (settingsButton?.contains(target) || settingsPopover?.contains(target)) return;
+      setSettingsOpen(false);
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    onCleanup(() => document.removeEventListener("pointerdown", onPointerDown));
+  });
+
+  function closeSettings() {
+    setSettingsOpen(false);
+    settingsButton?.focus();
+  }
 
   return (
     <header class="browser-bar" classList={{ "desktop-window-chrome": isDesktopShell }}>
@@ -494,6 +750,24 @@ function BrowserBar(props: { onOpenRepository: () => void; root: string | undefi
         </svg>
         <span title={props.root ?? "Loading repository"}>{label()}</span>
       </div>
+      <div class="browser-review-shortcuts" aria-label="Review keyboard shortcuts">
+        <span class="browser-shortcut-item">
+          Previous
+          <KbdShortcut keys={[","]} size="sm" variant="outline" />
+        </span>
+        <span class="browser-shortcut-item">
+          Next
+          <KbdShortcut keys={["."]} size="sm" variant="outline" />
+        </span>
+        <span class="browser-shortcut-item">
+          Viewed
+          <KbdShortcut keys={["V"]} size="sm" variant="outline" />
+        </span>
+        <span class="browser-shortcut-item">
+          Collapse
+          <KbdShortcut keys={["C"]} size="sm" variant="outline" />
+        </span>
+      </div>
       <div class="browser-tools" aria-label="View controls">
         <button
           class="bar-icon-button"
@@ -501,7 +775,7 @@ function BrowserBar(props: { onOpenRepository: () => void; root: string | undefi
           title={props.root ? `Open ${props.root} in Finder` : "Open in Finder"}
           aria-label="Open repository in Finder"
           disabled={actionDisabled()}
-          onClick={props.onOpenRepository}
+          onClick={() => props.onOpenRepository("finder")}
         >
           <img class="app-action-icon" src="/app-icons/finder.png" alt="" aria-hidden />
         </button>
@@ -511,10 +785,7 @@ function BrowserBar(props: { onOpenRepository: () => void; root: string | undefi
           title={props.root ? `Open ${props.root} in Zed` : "Open in Zed"}
           aria-label="Open repository in Zed"
           disabled={actionDisabled()}
-          onClick={() => {
-            const root = props.root;
-            if (root) void deltaClient.openRepository(root, "zed");
-          }}
+          onClick={() => props.onOpenRepository("zed")}
         >
           <img class="app-action-icon" src="/app-icons/zed.png" alt="" aria-hidden />
         </button>
@@ -524,21 +795,95 @@ function BrowserBar(props: { onOpenRepository: () => void; root: string | undefi
           title={props.root ? `Open ${props.root} in Ghostty` : "Open in Ghostty"}
           aria-label="Open repository in Ghostty"
           disabled={actionDisabled()}
-          onClick={() => {
-            const root = props.root;
-            if (root) void deltaClient.openRepository(root, "ghostty");
-          }}
+          onClick={() => props.onOpenRepository("ghostty")}
         >
           <img class="app-action-icon" src="/app-icons/ghostty.png" alt="" aria-hidden />
         </button>
-        <button class="bar-icon-button" type="button" title="Split view">
-          <SplitSquareVertical size={17} aria-hidden />
+        <span class="browser-toolbar-spacer" aria-hidden="true" />
+        <button
+          class="bar-icon-button"
+          type="button"
+          title={`Switch to ${props.preferences.diffStyle === "split" ? "unified" : "split"} view`}
+          aria-label={diffStyleLabel()}
+          aria-pressed={props.preferences.diffStyle === "split"}
+          onClick={props.onToggleDiffStyle}
+        >
+          <Show
+            when={props.preferences.diffStyle === "split"}
+            fallback={<AlignJustify size={17} aria-hidden />}
+          >
+            <SplitSquareVertical size={17} aria-hidden />
+          </Show>
         </button>
-        <button class="bar-icon-button" type="button" title="Settings">
-          <Settings size={18} aria-hidden />
-        </button>
+        <div class="diff-settings-anchor">
+          <button
+            ref={(element) => {
+              settingsButton = element;
+            }}
+            class="bar-icon-button"
+            classList={{ active: settingsOpen() }}
+            type="button"
+            title="Diff display settings"
+            aria-label="Diff display settings"
+            aria-expanded={settingsOpen()}
+            aria-haspopup="dialog"
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
+            <Settings size={18} aria-hidden />
+          </button>
+          <Show when={settingsOpen()}>
+            <div
+              ref={(element) => {
+                settingsPopover = element;
+              }}
+              class="diff-settings-popover"
+              role="dialog"
+              aria-label="Diff display settings"
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                closeSettings();
+              }}
+            >
+              <PreferenceSwitch
+                checked={props.preferences.backgrounds}
+                icon={PaintBucket}
+                label="Backgrounds"
+                onChange={(backgrounds) => props.onUpdatePreferences({ backgrounds })}
+              />
+              <PreferenceSwitch
+                checked={props.preferences.lineNumbers}
+                icon={ListOrdered}
+                label="Line numbers"
+                onChange={(lineNumbers) => props.onUpdatePreferences({ lineNumbers })}
+              />
+              <PreferenceSwitch
+                checked={props.preferences.wordWrap}
+                icon={WrapText}
+                label="Word wrap"
+                onChange={(wordWrap) => props.onUpdatePreferences({ wordWrap })}
+              />
+            </div>
+          </Show>
+        </div>
       </div>
     </header>
+  );
+}
+
+function SelectedFileStats(props: { file: ChangedFile | undefined }) {
+  const stats = createMemo(() => (props.file ? countFilePatchLines(props.file) : null));
+
+  return (
+    <div class="selected-file-stats" aria-live="polite">
+      <div class="selected-file-stats-path" title={props.file?.path ?? "No changed file selected"}>
+        {props.file?.path ?? "No changed file selected"}
+      </div>
+      <div class="selected-file-stats-counts" aria-label="Selected file line changes">
+        <span class="positive">+{formatCount(stats()?.additions ?? 0)}</span>
+        <span class="negative">-{formatCount(stats()?.deletions ?? 0)}</span>
+      </div>
+    </div>
   );
 }
 
@@ -547,75 +892,196 @@ function DiffCodeView(props: {
   files: ReadonlyArray<ChangedFile>;
   onToggleCollapsed: (file: ChangedFile, isCollapsed: boolean) => void;
   onToggleViewed: (file: ChangedFile, isViewed: boolean) => void;
+  preferences: DiffViewPreferences;
+  previewFile: RepositoryFile | null;
   scrollTarget: ScrollTarget | null;
   viewed: Record<string, string>;
 }) {
   let host: HTMLDivElement | undefined;
   let codeView: CodeView | undefined;
+  let navigationCorrectionId = 0;
+  let stopScrollPerfBenchmark: (() => void) | undefined;
+  let scrollPerfBenchmarkStarted = false;
+  let pendingHeaderAnchor:
+    | {
+        itemId: string;
+        offset: number;
+        path: string;
+      }
+    | undefined;
   const [codeViewReady, setCodeViewReady] = createSignal(false);
 
-  const buildItems = createMemo(() => {
-    const items: CodeViewItem[] = [];
-    const firstScrollTargetByPath = new Map<string, DiffScrollTarget>();
-    const itemMetadata = new Map<
-      string,
-      {
-        file: ChangedFile;
-        isCollapsed: boolean;
-        isViewed: boolean;
-        section: DiffSection;
-        sectionCount: number;
-      }
-    >();
+  const buildItems = createMemo(() =>
+    buildCodeViewItemModel({
+      collapsed: props.collapsed,
+      files: props.files,
+      previewFile: props.previewFile,
+      viewed: props.viewed,
+    }),
+  );
 
-    for (const file of props.files) {
-      const isViewed = props.viewed[file.path] === file.fingerprint;
-      const isCollapsed = props.collapsed.has(file.path) || isViewed;
-      const sections = isCollapsed ? file.sections.slice(0, 1) : file.sections;
+  function firstItemIdForPath(path: string) {
+    const file = props.files.find((candidate) => candidate.path === path);
+    const section = file?.sections[0];
+    return section ? diffItemId(section) : undefined;
+  }
 
-      for (const [index, section] of sections.entries()) {
-        const id = itemId(section);
-        const fileDiff = parseSectionDiff(file, section);
-        itemMetadata.set(id, {
-          file,
-          isCollapsed,
-          isViewed,
-          section,
-          sectionCount: file.sections.length,
-        });
-        firstScrollTargetByPath.set(
-          file.path,
-          firstScrollTargetByPath.get(file.path) ?? firstChangedLineTarget(id, fileDiff),
+  function captureHeaderAnchor(itemId: string, path: string) {
+    if (!codeView) return;
+
+    const itemTop = codeView.getTopForItem(itemId);
+    if (itemTop == null) return;
+
+    pendingHeaderAnchor = {
+      itemId,
+      offset: itemTop - codeView.getScrollTop(),
+      path,
+    };
+  }
+
+  function restoreHeaderAnchor() {
+    const anchor = pendingHeaderAnchor;
+    if (!anchor || !codeView) return;
+
+    pendingHeaderAnchor = undefined;
+    codeView.render(true);
+
+    const itemTop =
+      codeView.getTopForItem(anchor.itemId) ??
+      (firstItemIdForPath(anchor.path)
+        ? codeView.getTopForItem(firstItemIdForPath(anchor.path)!)
+        : undefined);
+
+    if (itemTop == null) return;
+
+    codeView.scrollTo({
+      behavior: "instant",
+      position: Math.max(0, itemTop - anchor.offset),
+      type: "position",
+    });
+    codeView.render(true);
+  }
+
+  function measureFileHeaderTop(itemId: string) {
+    if (!codeView) return;
+
+    const renderedItem = codeView.getRenderedItems().find((item) => item.id === itemId);
+    const container = codeView.getContainerElement() ?? host;
+    const header =
+      renderedItem?.element.querySelector<HTMLElement>(".delta-file-header") ??
+      renderedItem?.element;
+    if (!header || !container) return;
+
+    return header.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  }
+
+  function scrollToActualTop(position: number, behavior: "instant" | "smooth" = "instant") {
+    if (!codeView) return;
+
+    codeView.scrollTo({
+      behavior,
+      position: position + (props.previewFile ? 0 : codeViewItemMetrics.diffHeaderHeight),
+      type: "position",
+    });
+  }
+
+  function correctFileHeaderScroll(itemId: string, correctionId: number, attempt = 0) {
+    if (!codeView || correctionId !== navigationCorrectionId) return;
+
+    codeView.render(true);
+
+    const headerTop = measureFileHeaderTop(itemId);
+    if (headerTop == null) {
+      if (attempt < 6) {
+        window.requestAnimationFrame(() =>
+          correctFileHeaderScroll(itemId, correctionId, attempt + 1),
         );
-        items.push({
-          collapsed: isCollapsed,
-          fileDiff,
-          id,
-          type: "diff",
-          version: `${file.fingerprint}:${section.id}:${isCollapsed ? "closed" : "open"}:${isViewed ? "viewed" : "pending"}:${index}`,
-        });
       }
+      return;
     }
 
-    return { firstScrollTargetByPath, itemMetadata, items };
-  });
+    if (Math.abs(headerTop) <= 1) return;
+
+    scrollToActualTop(codeView.getScrollTop() + headerTop);
+
+    if (attempt < 3) {
+      window.requestAnimationFrame(() =>
+        correctFileHeaderScroll(itemId, correctionId, attempt + 1),
+      );
+    }
+  }
+
+  function finishFileHeaderScroll(
+    itemId: string,
+    correctionId: number,
+    previousScrollTop: number | undefined = undefined,
+    stableFrames = 0,
+    attempt = 0,
+  ) {
+    if (!codeView || correctionId !== navigationCorrectionId) return;
+
+    const currentScrollTop = codeView.getScrollTop();
+    const nextStableFrames =
+      previousScrollTop != null && Math.abs(currentScrollTop - previousScrollTop) <= 0.5
+        ? stableFrames + 1
+        : 0;
+
+    if (nextStableFrames >= 2 || attempt >= 90) {
+      correctFileHeaderScroll(itemId, correctionId);
+      return;
+    }
+
+    window.requestAnimationFrame(() =>
+      finishFileHeaderScroll(itemId, correctionId, currentScrollTop, nextStableFrames, attempt + 1),
+    );
+  }
+
+  function guideSmoothFileHeaderScroll(itemId: string, correctionId: number, attempt = 0) {
+    if (!codeView || correctionId !== navigationCorrectionId) return;
+
+    codeView.render(true);
+
+    const headerTop = measureFileHeaderTop(itemId);
+    if (headerTop == null) {
+      if (attempt < 30) {
+        window.requestAnimationFrame(() =>
+          guideSmoothFileHeaderScroll(itemId, correctionId, attempt + 1),
+        );
+      }
+      return;
+    }
+
+    if (Math.abs(headerTop) > 1) {
+      scrollToActualTop(codeView.getScrollTop() + headerTop, "smooth");
+    }
+
+    finishFileHeaderScroll(itemId, correctionId);
+  }
 
   const options = createMemo(
     () =>
       ({
         diffIndicators: "bars",
-        diffStyle: "split",
+        diffStyle: props.preferences.diffStyle,
+        disableBackground: !props.preferences.backgrounds,
+        disableFileHeader: Boolean(props.previewFile),
+        disableLineNumbers: !props.preferences.lineNumbers,
         enableLineSelection: true,
         hunkSeparators: "simple",
         itemMetrics: codeViewItemMetrics,
         layout: codeViewLayout,
-        lineDiffType: "char",
+        lineDiffType: "word-alt",
+        maxLineDiffLength: 800,
+        overflow: props.preferences.wordWrap ? "wrap" : "scroll",
         renderCustomHeader: (_fileDiff, context) => {
           const metadata = buildItems().itemMetadata.get(context.item.id);
           if (!metadata) return undefined;
           return createFileHeader({
             ...metadata,
-            onToggleCollapsed: props.onToggleCollapsed,
+            onToggleCollapsed: (file, isCollapsed) => {
+              captureHeaderAnchor(context.item.id, file.path);
+              props.onToggleCollapsed(file, isCollapsed);
+            },
           });
         },
         smoothScrollSettings: codeViewSmoothScrollSettings,
@@ -644,21 +1110,47 @@ function DiffCodeView(props: {
   createEffect(() => {
     if (!codeViewReady() || !codeView) return;
     codeView.setItems(buildItems().items);
+    restoreHeaderAnchor();
+  });
+
+  createEffect(() => {
+    if (!codeViewReady() || !host || scrollPerfBenchmarkStarted) return;
+    if (!shouldRunScrollPerfBenchmark() || buildItems().items.length === 0) return;
+
+    scrollPerfBenchmarkStarted = true;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (host) stopScrollPerfBenchmark = runScrollPerfBenchmark(host);
+      });
+    });
   });
 
   createEffect(() => {
     if (!codeView || !props.scrollTarget) return;
-    const target = buildItems().firstScrollTargetByPath.get(props.scrollTarget.path);
-    if (!target) return;
+    const correctionId = ++navigationCorrectionId;
+    const itemId = buildItems().fileStartItemIdByPath.get(props.scrollTarget.path);
+    if (!itemId) return;
 
-    codeView.scrollTo(target);
+    const itemTop = codeView.getTopForItem(itemId);
+    if (itemTop != null) {
+      scrollToActualTop(itemTop, "smooth");
+      window.requestAnimationFrame(() => guideSmoothFileHeaderScroll(itemId, correctionId));
+      return;
+    }
+
+    codeView.scrollTo({ align: "start", behavior: "smooth", id: itemId, type: "item" });
+    window.requestAnimationFrame(() => guideSmoothFileHeaderScroll(itemId, correctionId));
   });
 
-  onCleanup(() => codeView?.cleanUp());
+  onCleanup(() => {
+    stopScrollPerfBenchmark?.();
+    codeView?.cleanUp();
+  });
 
   return (
     <div
       class="code-view-host"
+      classList={{ "file-preview-mode": Boolean(props.previewFile) }}
       ref={(element) => {
         host = element;
       }}
@@ -667,129 +1159,202 @@ function DiffCodeView(props: {
 }
 
 function DeltaApp() {
-  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
-  const [error, setError] = createSignal<string | null>(null);
-  const [scrollTarget, setScrollTarget] = createSignal<ScrollTarget | null>(null);
-  const [selectedPath, setSelectedPath] = createSignal<string | null>(null);
-  const [state, setState] = createSignal<RepositoryState | null>(null);
-  const [viewed, setViewed] = createSignal<Record<string, string>>({});
-
-  const files = createMemo(() => state()?.files ?? []);
-  const diffStats = createMemo(() => {
-    let additions = 0;
-    let deletions = 0;
-
-    for (const file of files()) {
-      for (const section of file.sections) {
-        const counts = countSectionPatchLines(section);
-        additions += counts.additions;
-        deletions += counts.deletions;
-      }
-    }
-
-    return {
-      additions,
-      deletions,
-      files: files().length,
-    };
+  let fileSearchInput: HTMLInputElement | undefined;
+  const [fileSearchQuery, setFileSearchQuery] = createSignal("");
+  const [fileSearchOpen, setFileSearchOpen] = createSignal(false);
+  const [preferences, setPreferences] =
+    createSignal<DiffViewPreferences>(readDiffViewPreferences());
+  const workspace = createReviewWorkspace({
+    countFilePatchLines,
+    readViewed,
+    writeViewed,
+  });
+  const {
+    collapsed,
+    diffStats,
+    error,
+    files,
+    moveSelectedFile,
+    openRepository,
+    previewError,
+    previewFile,
+    previewLoading,
+    refresh,
+    scrollTarget,
+    selectPath,
+    selectedChangedFile,
+    selectedPath,
+    sidebarFileMode,
+    sidebarTreeFiles,
+    state,
+    switchSidebarFileMode,
+    toggleCollapsed,
+    toggleSelectedFileCollapsed,
+    toggleSelectedFileViewed,
+    toggleViewed,
+    viewed,
+  } = workspace;
+  const visibleTreeFiles = createMemo(() => {
+    const query = fileSearchQuery().trim().toLowerCase();
+    if (!query) return sidebarTreeFiles();
+    return sidebarTreeFiles().filter((path) => path.toLowerCase().includes(query));
   });
 
-  async function refresh() {
-    try {
-      const nextState = await deltaClient.getRepositoryState();
-      setState(nextState);
-      setViewed(readViewed(nextState.root));
-      setSelectedPath((current) => current ?? nextState.files[0]?.path ?? null);
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
+  function updatePreferences(patch: Partial<DiffViewPreferences>) {
+    setPreferences((current) => {
+      const next = { ...current, ...patch };
+      writeDiffViewPreferences(next);
+      return next;
+    });
   }
 
-  onMount(() => {
-    void refresh();
+  function toggleDiffStyle() {
+    updatePreferences({
+      diffStyle: preferences().diffStyle === "split" ? "unified" : "split",
+    });
+  }
+
+  const runReviewShortcut = (event: KeyboardEvent, action: () => void) => {
+    if (isEditableShortcutTarget(event.target)) return;
+    action();
+  };
+
+  createHotkey(
+    ".",
+    (event) => runReviewShortcut(event, () => moveSelectedFile(1)),
+    () => ({ enabled: files().length > 0, ignoreInputs: true }),
+  );
+  createHotkey(
+    ",",
+    (event) => runReviewShortcut(event, () => moveSelectedFile(-1)),
+    () => ({ enabled: files().length > 0, ignoreInputs: true }),
+  );
+  createHotkey(
+    "V",
+    (event) => runReviewShortcut(event, toggleSelectedFileViewed),
+    () => ({ enabled: Boolean(selectedChangedFile()), ignoreInputs: true }),
+  );
+  createHotkey(
+    "C",
+    (event) => runReviewShortcut(event, toggleSelectedFileCollapsed),
+    () => ({ enabled: Boolean(selectedChangedFile()), ignoreInputs: true }),
+  );
+  createHotkey(
+    "R",
+    (event) => runReviewShortcut(event, () => void refresh()),
+    () => ({ enabled: true, ignoreInputs: true }),
+  );
+
+  createEffect(() => {
+    if (!fileSearchOpen()) return;
+    queueMicrotask(() => fileSearchInput?.focus());
   });
 
-  function selectPath(path: string) {
-    setSelectedPath(path);
-    setScrollTarget((current) => ({ path, request: (current?.request ?? 0) + 1 }));
-  }
-
-  function toggleCollapsed(file: ChangedFile, isCollapsed: boolean) {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (isCollapsed) next.delete(file.path);
-      else next.add(file.path);
-      return next;
-    });
-  }
-
-  function toggleViewed(file: ChangedFile, isViewed: boolean) {
-    const root = state()?.root;
-    if (!root) return;
-
-    setViewed((current) => {
-      const next = { ...current };
-      if (isViewed) delete next[file.path];
-      else next[file.path] = file.fingerprint;
-      writeViewed(root, next);
-      return next;
-    });
-
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (isViewed) next.delete(file.path);
-      else next.add(file.path);
-      return next;
-    });
+  function closeFileSearch() {
+    setFileSearchOpen(false);
+    setFileSearchQuery("");
   }
 
   return (
     <main class="delta-shell">
       <BrowserBar
+        preferences={preferences()}
         root={state()?.root}
-        onOpenRepository={() => {
-          const root = state()?.root;
-          if (root) void deltaClient.openRepository(root, "finder");
-        }}
+        onOpenRepository={openRepository}
+        onToggleDiffStyle={toggleDiffStyle}
+        onUpdatePreferences={updatePreferences}
       />
       <div class="delta-app">
         <aside class="sidebar-shell">
           <div class="sidebar-chrome">
-            <div class="sidebar-chrome-group">
+            <div class="sidebar-mode-switch" role="tablist" aria-label="File tree scope">
               <button
-                class="sidebar-tool-button active"
+                class="sidebar-mode-button"
+                classList={{ active: sidebarFileMode() === "all" }}
                 type="button"
-                title={state()?.root ? compactPath(state()!.root) : "Files"}
+                role="tab"
+                aria-selected={sidebarFileMode() === "all"}
+                title={state()?.root ? compactPath(state()!.root) : "All files"}
+                onClick={() => switchSidebarFileMode("all")}
               >
-                <GitBranch size={18} aria-hidden />
+                All files
               </button>
-              <button class="sidebar-tool-button" type="button" title="Comments">
-                <MessageCircle size={19} aria-hidden />
+              <button
+                class="sidebar-mode-button"
+                classList={{ active: sidebarFileMode() === "changed" }}
+                type="button"
+                role="tab"
+                aria-selected={sidebarFileMode() === "changed"}
+                onClick={() => switchSidebarFileMode("changed")}
+              >
+                Changed
               </button>
             </div>
-            <button class="sidebar-tool-button" type="button" title="Search files">
+            <button
+              class="sidebar-tool-button"
+              classList={{ active: fileSearchOpen() }}
+              type="button"
+              title="Search files"
+              aria-label="Search files"
+              aria-expanded={fileSearchOpen()}
+              aria-controls="sidebar-file-search"
+              onClick={() => setFileSearchOpen((open) => !open)}
+            >
               <Search size={20} aria-hidden />
             </button>
           </div>
 
+          <Show when={fileSearchOpen()}>
+            <div class="sidebar-search-popdown" id="sidebar-file-search">
+              <Search size={15} aria-hidden />
+              <input
+                ref={(element) => {
+                  fileSearchInput = element;
+                }}
+                type="search"
+                value={fileSearchQuery()}
+                placeholder="Search files"
+                aria-label="Search files"
+                onInput={(event) => setFileSearchQuery(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  closeFileSearch();
+                }}
+              />
+            </div>
+          </Show>
+
           <div class="sidebar-tree-region">
             <Show
-              when={files().length > 0}
+              when={visibleTreeFiles().length > 0}
               fallback={
                 <div class="sidebar-empty">
-                  <Check size={16} aria-hidden />
-                  No local changes
+                  <Show when={fileSearchQuery().trim()} fallback={<Check size={16} aria-hidden />}>
+                    <Search size={16} aria-hidden />
+                  </Show>
+                  <Show
+                    when={fileSearchQuery().trim()}
+                    fallback={
+                      sidebarFileMode() === "changed" ? "No changed files" : "No repository files"
+                    }
+                  >
+                    No matching files
+                  </Show>
                 </div>
               }
             >
               <FileTreePane
                 files={files()}
                 onSelectPath={selectPath}
+                searchQuery={fileSearchQuery()}
                 selectedPath={selectedPath()}
+                treeFiles={visibleTreeFiles()}
               />
             </Show>
           </div>
+
+          <SelectedFileStats file={selectedChangedFile()} />
 
           <div class="diff-stats-panel">
             <dl class="diff-stats-list">
@@ -819,7 +1384,16 @@ function DeltaApp() {
             )}
           </Show>
 
-          <Show when={!error() && state() && files().length === 0}>
+          <Show
+            when={
+              !error() &&
+              state() &&
+              files().length === 0 &&
+              !previewFile() &&
+              !previewLoading() &&
+              !previewError()
+            }
+          >
             <div class="state-panel">
               <Check size={18} aria-hidden />
               <strong>No local changes</strong>
@@ -827,12 +1401,39 @@ function DeltaApp() {
             </div>
           </Show>
 
-          <Show when={!error() && state() && files().length > 0}>
+          <Show when={!error() && previewLoading()}>
+            <div class="state-panel">
+              <RefreshCcw size={18} class="spin" aria-hidden />
+              <strong>Loading file</strong>
+              <span>{selectedPath()}</span>
+            </div>
+          </Show>
+
+          <Show when={!error() && previewError()}>
+            {(message) => (
+              <div class="state-panel">
+                <strong>Unable to read file</strong>
+                <span>{message()}</span>
+              </div>
+            )}
+          </Show>
+
+          <Show
+            when={
+              !error() &&
+              state() &&
+              !previewLoading() &&
+              !previewError() &&
+              (files().length > 0 || previewFile())
+            }
+          >
             <DiffCodeView
               collapsed={collapsed()}
               files={files()}
               onToggleCollapsed={toggleCollapsed}
               onToggleViewed={toggleViewed}
+              preferences={preferences()}
+              previewFile={previewFile()}
               scrollTarget={scrollTarget()}
               viewed={viewed()}
             />

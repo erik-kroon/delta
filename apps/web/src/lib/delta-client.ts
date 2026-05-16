@@ -1,11 +1,15 @@
 import type { DeltaRPCSchema } from "./delta-rpc-schema";
 import {
+  sampleRepositoryFiles,
   sampleRepositoryState,
   type OpenRepositoryTarget,
+  type RepositoryFile,
   type RepositoryState,
+  type ReviewSource,
 } from "./repository";
 
 type DeltaClient = {
+  getRepositoryFile: (path: string, source?: ReviewSource) => Promise<RepositoryFile>;
   getRepositoryState: () => Promise<RepositoryState>;
   openRepository: (path: string, target: OpenRepositoryTarget) => Promise<void>;
   showInFolder: (path: string) => Promise<void>;
@@ -43,6 +47,22 @@ async function getRPC() {
 }
 
 export const deltaClient: DeltaClient = {
+  async getRepositoryFile(path, source) {
+    const activeRPC = await getRPC();
+    if (!activeRPC) {
+      return (
+        sampleRepositoryFiles[path] ?? {
+          binary: false,
+          contents: "",
+          fingerprint: `sample-file-empty:${path}`,
+          path,
+        }
+      );
+    }
+
+    return activeRPC.request.getRepositoryFile({ path, source });
+  },
+
   async getRepositoryState() {
     const activeRPC = await getRPC();
     if (!activeRPC) {

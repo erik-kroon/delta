@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type {
@@ -11,6 +11,7 @@ import type {
   GitFileStatus,
   HistoryEntry,
   OpenRepositoryTarget,
+  RepositoryFile,
   RepositoryHistory,
   RepositoryState,
   ReviewSource,
@@ -31,12 +32,39 @@ function fingerprint(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-async function git(repoPath: string, args: string[]) {
+async function execGit(repoPath: string, args: string[]) {
   const { stdout } = await execFileAsync("git", ["-C", repoPath, ...args], {
     encoding: "utf8",
     maxBuffer: 1024 * 1024 * 64,
   });
   return stdout;
+}
+
+async function execGitBuffer(repoPath: string, args: string[]) {
+  const { stdout } = await execFileAsync("git", ["-C", repoPath, ...args], {
+    encoding: "buffer",
+    maxBuffer: 1024 * 1024 * 64,
+  });
+  return stdout as Buffer;
+}
+
+function fingerprintBuffer(buffer: Buffer) {
+  return createHash("sha256").update(buffer).digest("hex").slice(0, 16);
+}
+
+function resolveRepositoryPath(repoRoot: string, path: string) {
+  if (!path || path.includes("\0")) {
+    throw new Error("Invalid repository file path.");
+  }
+
+  const absolutePath = resolve(repoRoot, path);
+  const rootPrefix = repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`;
+
+  if (absolutePath !== repoRoot && !absolutePath.startsWith(rootPrefix)) {
+    throw new Error("Repository file path escapes the repository root.");
+  }
+
+  return absolutePath;
 }
 
 function normalizeStatus(statusCode: string | undefined): GitFileStatus {
@@ -60,8 +88,7 @@ function parseStatus(raw: string): StatusItem[] {
     let oldPath: string | undefined;
 
     if (x === "R" || x === "C") {
-      oldPath = path;
-      path = parts[++index] ?? path;
+      oldPath = parts[++index] ?? path;
     }
 
     const current =
@@ -91,12 +118,133 @@ function parseStatus(raw: string): StatusItem[] {
   return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function parseNullSeparatedPaths(raw: string) {
+  return raw
+    .split("\0")
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+async function listWorkingTreeFiles(repoRoot: string, status: ReadonlyArray<StatusItem>) {
+  const paths = new Set(
+    parseNullSeparatedPaths(
+      await execGit(repoRoot, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]),
+    ),
+  );
+
+  for (const item of status) {
+    paths.add(item.path);
+    if (item.oldPath) paths.add(item.oldPath);
+  }
+
+  return [...paths].sort((left, right) => left.localeCompare(right));
+}
+
+async function listCommitTreeFiles(repoRoot: string, commit: string) {
+  return parseNullSeparatedPaths(
+    await execGit(repoRoot, ["ls-tree", "-r", "-z", "--name-only", commit]),
+  );
+}
+
 function isBinaryBuffer(buffer: Buffer) {
   return buffer.includes(0);
 }
 
+class GitRepositoryAdapter {
+  private constructor(private readonly repoRoot: string) {}
+
+  static async fromLaunchPath(launchPath: string) {
+    const repoRoot = (await execGit(launchPath, ["rev-parse", "--show-toplevel"])).trim();
+    return new GitRepositoryAdapter(repoRoot);
+  }
+
+  get root() {
+    return this.repoRoot;
+  }
+
+  resolvePath(path: string) {
+    return resolveRepositoryPath(this.repoRoot, path);
+  }
+
+  async resolveCommit(ref: string) {
+    return (await this.git(["rev-parse", "--verify", `${ref}^{commit}`])).trim();
+  }
+
+  async readWorkingTreeStatus() {
+    return parseStatus(await this.git(["status", "--porcelain=v1", "-z", "-uall"]));
+  }
+
+  async listWorkingTreeFiles(status: ReadonlyArray<StatusItem>) {
+    return listWorkingTreeFiles(this.repoRoot, status);
+  }
+
+  async listCommitTreeFiles(commit: string) {
+    return listCommitTreeFiles(this.repoRoot, commit);
+  }
+
+  async readCommitNameStatus(commit: string) {
+    return parseCommitNameStatus(
+      await this.git([
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-r",
+        "-z",
+        "--root",
+        "-M",
+        commit,
+      ]),
+    );
+  }
+
+  async readPatch(path: string, kind: DiffSection["kind"], untracked: boolean) {
+    return getPatch(this.repoRoot, path, kind, untracked);
+  }
+
+  async readCommitPatch(commit: string, path: string) {
+    const patch = await this.git([
+      "show",
+      "--format=",
+      "--patch",
+      "--no-ext-diff",
+      "--find-renames",
+      commit,
+      "--",
+      path,
+    ]);
+
+    return {
+      binary: /Binary files .* differ/.test(patch),
+      patch,
+    };
+  }
+
+  async readFile(path: string, source: ReviewSource) {
+    const absolutePath = this.resolvePath(path);
+
+    if (source.type === "commit") {
+      const commit = await this.resolveCommit(source.ref);
+      return this.gitBuffer(["show", `${commit}:${path}`]);
+    }
+
+    return fs.readFile(absolutePath);
+  }
+
+  async readHistory(limit: number) {
+    return this.git(["log", `--max-count=${limit}`, "--format=%H%x00%P%x00%ct%x00%s%x00"]);
+  }
+
+  private git(args: string[]) {
+    return execGit(this.repoRoot, args);
+  }
+
+  private gitBuffer(args: string[]) {
+    return execGitBuffer(this.repoRoot, args);
+  }
+}
+
 async function createUntrackedPatch(repoRoot: string, path: string) {
-  const absolutePath = join(repoRoot, path);
+  const absolutePath = resolveRepositoryPath(repoRoot, path);
   const buffer = await fs.readFile(absolutePath);
 
   if (isBinaryBuffer(buffer)) {
@@ -140,7 +288,7 @@ async function getPatch(
     kind === "staged"
       ? ["diff", "--cached", "--patch", "--no-ext-diff", "--find-renames", "--", path]
       : ["diff", "--patch", "--no-ext-diff", "--find-renames", "--", path];
-  const patch = await git(repoRoot, args);
+  const patch = await execGit(repoRoot, args);
 
   return {
     binary: /Binary files .* differ/.test(patch),
@@ -149,15 +297,16 @@ async function getPatch(
 }
 
 export async function readWorkingTreeState(launchPath: string): Promise<RepositoryState> {
-  const repoRoot = (await git(launchPath, ["rev-parse", "--show-toplevel"])).trim();
-  const status = parseStatus(await git(repoRoot, ["status", "--porcelain=v1", "-z", "-uall"]));
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const status = await adapter.readWorkingTreeStatus();
+  const treeFiles = await adapter.listWorkingTreeFiles(status);
   const files: ChangedFile[] = [];
 
   for (const item of status) {
     const sections: DiffSection[] = [];
 
     if (item.staged) {
-      const staged = await getPatch(repoRoot, item.path, "staged", false);
+      const staged = await adapter.readPatch(item.path, "staged", false);
       sections.push({
         binary: staged.binary,
         id: `${item.path}:staged`,
@@ -167,7 +316,7 @@ export async function readWorkingTreeState(launchPath: string): Promise<Reposito
     }
 
     if (item.unstaged) {
-      const unstaged = await getPatch(repoRoot, item.path, "unstaged", item.untracked);
+      const unstaged = await adapter.readPatch(item.path, "unstaged", item.untracked);
       sections.push({
         binary: unstaged.binary,
         id: `${item.path}:unstaged`,
@@ -191,8 +340,9 @@ export async function readWorkingTreeState(launchPath: string): Promise<Reposito
     files,
     generatedAt: Date.now(),
     launchPath,
-    root: repoRoot,
+    root: adapter.root,
     source: { type: "working-tree" },
+    treeFiles,
   };
 }
 
@@ -218,44 +368,25 @@ function parseCommitNameStatus(raw: string) {
 }
 
 async function readCommitState(launchPath: string, ref: string): Promise<RepositoryState> {
-  const repoRoot = (await git(launchPath, ["rev-parse", "--show-toplevel"])).trim();
-  const commit = (await git(repoRoot, ["rev-parse", "--verify", `${ref}^{commit}`])).trim();
-  const status = parseCommitNameStatus(
-    await git(repoRoot, [
-      "diff-tree",
-      "--no-commit-id",
-      "--name-status",
-      "-r",
-      "-z",
-      "--root",
-      "-M",
-      commit,
-    ]),
-  );
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const commit = await adapter.resolveCommit(ref);
+  const treeFiles = await adapter.listCommitTreeFiles(commit);
+  const status = await adapter.readCommitNameStatus(commit);
   const files: ChangedFile[] = [];
 
   for (const item of status) {
-    const patch = await git(repoRoot, [
-      "show",
-      "--format=",
-      "--patch",
-      "--no-ext-diff",
-      "--find-renames",
-      commit,
-      "--",
-      item.path,
-    ]);
+    const section = await adapter.readCommitPatch(commit, item.path);
 
     files.push({
-      fingerprint: fingerprint(`${commit}\n${item.oldPath ?? ""}\n${patch}`),
+      fingerprint: fingerprint(`${commit}\n${item.oldPath ?? ""}\n${section.patch}`),
       oldPath: item.oldPath,
       path: item.path,
       sections: [
         {
-          binary: /Binary files .* differ/.test(patch),
+          binary: section.binary,
           id: `${item.path}:${commit}`,
           kind: "commit",
-          patch,
+          patch: section.patch,
         },
       ],
       status: item.status,
@@ -266,8 +397,9 @@ async function readCommitState(launchPath: string, ref: string): Promise<Reposit
     files,
     generatedAt: Date.now(),
     launchPath,
-    root: repoRoot,
+    root: adapter.root,
     source: { ref: commit, type: "commit" },
+    treeFiles,
   };
 }
 
@@ -280,16 +412,29 @@ export function readRepositoryState(
     : readWorkingTreeState(launchPath);
 }
 
+export async function readRepositoryFile(
+  launchPath: string,
+  path: string,
+  source: ReviewSource = { type: "working-tree" },
+): Promise<RepositoryFile> {
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const buffer = await adapter.readFile(path, source);
+  const binary = isBinaryBuffer(buffer);
+
+  return {
+    binary,
+    contents: binary ? "" : buffer.toString("utf8"),
+    fingerprint: fingerprintBuffer(buffer),
+    path,
+  };
+}
+
 export async function listRepositoryHistory(
   launchPath: string,
   limit = 200,
 ): Promise<RepositoryHistory> {
-  const repoRoot = (await git(launchPath, ["rev-parse", "--show-toplevel"])).trim();
-  const raw = await git(repoRoot, [
-    "log",
-    `--max-count=${limit}`,
-    "--format=%H%x00%P%x00%ct%x00%s%x00",
-  ]);
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const raw = await adapter.readHistory(limit);
   const parts = raw.split("\0").filter(Boolean);
   const entries: HistoryEntry[] = [];
 
@@ -303,7 +448,7 @@ export async function listRepositoryHistory(
     });
   }
 
-  return { entries, root: repoRoot };
+  return { entries, root: adapter.root };
 }
 
 export async function showInRepositoryFolder(
@@ -312,13 +457,13 @@ export async function showInRepositoryFolder(
   showItemInFolder: (path: string) => void,
   openPath: (path: string) => void,
 ) {
-  const state = await readWorkingTreeState(launchPath);
-  const absolutePath = resolve(state.root, path);
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const absolutePath = adapter.resolvePath(path);
 
   if (existsSync(absolutePath)) {
     showItemInFolder(absolutePath);
   } else {
-    openPath(state.root);
+    openPath(adapter.root);
   }
 }
 
@@ -329,9 +474,9 @@ export async function openRepositoryTarget(
   showItemInFolder: (path: string) => void,
   openPath: (path: string) => void,
 ) {
-  const state = await readWorkingTreeState(launchPath);
-  const repositoryPath = resolve(state.root, path);
-  const targetPath = existsSync(repositoryPath) ? repositoryPath : state.root;
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const repositoryPath = adapter.resolvePath(path);
+  const targetPath = existsSync(repositoryPath) ? repositoryPath : adapter.root;
 
   if (target === "finder") {
     showItemInFolder(targetPath);

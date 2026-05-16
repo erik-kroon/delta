@@ -40,12 +40,20 @@ export type RepositoryHistory = {
   root: string;
 };
 
+export type RepositoryFile = {
+  binary: boolean;
+  contents: string;
+  fingerprint: string;
+  path: string;
+};
+
 export type RepositoryState = {
   files: ReadonlyArray<ChangedFile>;
   generatedAt: number;
   launchPath: string;
   root: string;
   source: ReviewSource;
+  treeFiles: ReadonlyArray<string>;
 };
 
 const samplePatch = `diff --git a/apps/web/src/routes/index.tsx b/apps/web/src/routes/index.tsx
@@ -84,6 +92,33 @@ index 0000000..3333333
 +
 +export type RepositoryState = { files: ChangedFile[] };`;
 
+export const sampleRepositoryFiles: Record<string, RepositoryFile> = {
+  ".gitignore": {
+    binary: false,
+    contents: "node_modules\n.dist\n.DS_Store\n",
+    fingerprint: "sample-file-gitignore",
+    path: ".gitignore",
+  },
+  "apps/web/src/styles.css": {
+    binary: false,
+    contents: ":root {\n  color-scheme: light dark;\n}\n\nbody {\n  margin: 0;\n}\n",
+    fingerprint: "sample-file-styles",
+    path: "apps/web/src/styles.css",
+  },
+  "package.json": {
+    binary: false,
+    contents: '{\n  "name": "delta",\n  "private": true,\n  "type": "module"\n}\n',
+    fingerprint: "sample-file-package",
+    path: "package.json",
+  },
+  "README.md": {
+    binary: false,
+    contents: "# Delta\n\nA desktop diff review workspace.\n",
+    fingerprint: "sample-file-readme",
+    path: "README.md",
+  },
+};
+
 export const sampleRepositoryState: RepositoryState = {
   files: [
     {
@@ -112,4 +147,15 @@ export const sampleRepositoryState: RepositoryState = {
   launchPath: "browser-preview",
   root: "browser-preview",
   source: { type: "working-tree" },
+  treeFiles: [
+    ".gitignore",
+    "apps/desktop/src/bun/git-state.ts",
+    "apps/desktop/src/bun/index.ts",
+    "apps/web/src/lib/delta-client.ts",
+    "apps/web/src/lib/repository.ts",
+    "apps/web/src/routes/index.tsx",
+    "apps/web/src/styles.css",
+    "package.json",
+    "README.md",
+  ],
 };
