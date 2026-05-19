@@ -3,6 +3,7 @@ import {
   samplePullRequestRepositoryState,
   sampleRepositoryFiles,
   sampleRepositoryState,
+  type DiffSection,
   type OpenRepositoryTarget,
   type RepositoryFile,
   type RepositoryState,
@@ -10,6 +11,11 @@ import {
 } from "./repository";
 
 type DeltaClient = {
+  getDiffSectionContent: (
+    path: string,
+    kind: DiffSection["kind"],
+    source?: ReviewSource,
+  ) => Promise<DiffSection>;
   getRepositoryFile: (path: string, source?: ReviewSource) => Promise<RepositoryFile>;
   getRepositoryState: (source?: ReviewSource) => Promise<RepositoryState>;
   openRepository: (path: string, target: OpenRepositoryTarget) => Promise<void>;
@@ -48,6 +54,18 @@ async function getRPC() {
 }
 
 export const deltaClient: DeltaClient = {
+  async getDiffSectionContent(path, kind, source) {
+    const activeRPC = await getRPC();
+    if (!activeRPC) {
+      const file = sampleRepositoryState.files.find((candidate) => candidate.path === path);
+      const section = file?.sections.find((candidate) => candidate.kind === kind);
+      if (section) return section;
+      throw new Error(`No sample diff section for ${path}.`);
+    }
+
+    return activeRPC.request.getDiffSectionContent({ path, kind, source });
+  },
+
   async getRepositoryFile(path, source) {
     const activeRPC = await getRPC();
     if (!activeRPC) {

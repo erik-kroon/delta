@@ -1,4 +1,5 @@
 import type {
+  DiffSection,
   OpenRepositoryTarget,
   RepositoryFile,
   RepositoryHistory,
@@ -21,6 +22,10 @@ export type DeltaRPCSchema = {
       getRepositoryFile: {
         params: { path: string; source?: ReviewSource };
         response: RepositoryFile;
+      };
+      getDiffSectionContent: {
+        params: { kind: DiffSection["kind"]; path: string; source?: ReviewSource };
+        response: DiffSection;
       };
       showInFolder: {
         params: { path: string };

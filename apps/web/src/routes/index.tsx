@@ -179,7 +179,13 @@ function countSectionPatchLines(section: DiffSection) {
   const cached = patchLineCounts.get(section);
   if (cached) return cached;
 
-  const counts = countPatchLines(section.patch);
+  const counts =
+    section.loadState === "loaded"
+      ? countPatchLines(section.patch)
+      : {
+          additions: section.summary?.additions ?? 0,
+          deletions: section.summary?.deletions ?? 0,
+        };
   patchLineCounts.set(section, counts);
   return counts;
 }
@@ -362,6 +368,7 @@ function createFileHeader({
   isCollapsed,
   isViewed,
   onToggleCollapsed,
+  onLoadSection,
   section,
   sectionCount,
 }: {
@@ -369,6 +376,7 @@ function createFileHeader({
   isCollapsed: boolean;
   isViewed: boolean;
   onToggleCollapsed: (file: ChangedFile, isCollapsed: boolean) => void;
+  onLoadSection: (file: ChangedFile, section: DiffSection) => void;
   section: DiffSection;
   sectionCount: number;
 }) {
@@ -408,6 +416,13 @@ function createFileHeader({
 
   header.append(toggle, heading);
 
+  if (section.loadState !== "loaded") {
+    const summary = document.createElement("div");
+    summary.className = `delta-section-summary ${section.loadState}`;
+    summary.textContent = section.summary?.message ?? "Diff content unavailable.";
+    heading.append(summary);
+  }
+
   if (sectionCount > 1) {
     const sectionBadge = document.createElement("div");
     sectionBadge.className = `delta-section-badge ${section.kind}`;
@@ -434,6 +449,20 @@ function createFileHeader({
   }
 
   header.append(diffStats);
+
+  if (section.loadState === "deferred") {
+    const loadButton = document.createElement("button");
+    loadButton.className = "delta-load-section-button";
+    loadButton.type = "button";
+    loadButton.title = `Load ${sectionLabel[section.kind].toLowerCase()} diff`;
+    loadButton.ariaLabel = `Load diff for ${file.path}`;
+    loadButton.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span>Load</span>`;
+    loadButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onLoadSection(file, section);
+    });
+    header.append(loadButton);
+  }
 
   return header;
 }
@@ -917,6 +946,7 @@ function DiffCodeView(props: {
   collapsed: ReadonlySet<string>;
   files: ReadonlyArray<ChangedFile>;
   onToggleCollapsed: (file: ChangedFile, isCollapsed: boolean) => void;
+  onLoadSection: (file: ChangedFile, section: DiffSection) => void;
   onToggleViewed: (file: ChangedFile, isViewed: boolean) => void;
   preferences: DiffViewPreferences;
   previewFile: RepositoryFile | null;
@@ -1107,6 +1137,10 @@ function DiffCodeView(props: {
               captureHeaderAnchor(context.item.id, file.path);
               props.onToggleCollapsed(file, isCollapsed);
             },
+            onLoadSection: (file, section) => {
+              captureHeaderAnchor(context.item.id, file.path);
+              props.onLoadSection(file, section);
+            },
           });
         },
         smoothScrollSettings: codeViewSmoothScrollSettings,
@@ -1213,6 +1247,7 @@ function DeltaApp() {
     sidebarTreeFiles,
     state,
     switchSidebarFileMode,
+    loadDiffSection,
     toggleCollapsed,
     toggleSelectedFileCollapsed,
     toggleSelectedFileViewed,
@@ -1456,6 +1491,7 @@ function DeltaApp() {
               collapsed={collapsed()}
               files={files()}
               onToggleCollapsed={toggleCollapsed}
+              onLoadSection={loadDiffSection}
               onToggleViewed={toggleViewed}
               preferences={preferences()}
               previewFile={previewFile()}

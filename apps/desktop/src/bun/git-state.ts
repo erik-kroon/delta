@@ -18,6 +18,8 @@ import type {
 } from "../../../web/src/lib/repository";
 
 const execFileAsync = promisify(execFile);
+const eagerDiffByteThreshold = 256 * 1024;
+const maxLoadableDiffByteThreshold = 2 * 1024 * 1024;
 
 type StatusItem = {
   oldPath?: string;
@@ -80,6 +82,66 @@ async function execGitBuffer(repoPath: string, args: string[]) {
 
 function fingerprintBuffer(buffer: Buffer) {
   return createHash("sha256").update(buffer).digest("hex").slice(0, 16);
+}
+
+function summarizePatch(patch: string) {
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) additions += 1;
+    else if (line.startsWith("-")) deletions += 1;
+  }
+
+  return { additions, bytes: Buffer.byteLength(patch), deletions };
+}
+
+function loadedSection(
+  path: string,
+  kind: DiffSection["kind"],
+  patch: string,
+  binary: boolean,
+): DiffSection {
+  return {
+    binary,
+    id: `${path}:${kind}`,
+    kind,
+    loadState: "loaded",
+    patch,
+    summary: summarizePatch(patch),
+  };
+}
+
+function summarySection({
+  binary = false,
+  kind,
+  loadState,
+  message,
+  path,
+  reason,
+  summary,
+}: {
+  binary?: boolean;
+  kind: DiffSection["kind"];
+  loadState: DiffSection["loadState"];
+  message: string;
+  path: string;
+  reason: NonNullable<DiffSection["summary"]>["reason"];
+  summary?: Partial<NonNullable<DiffSection["summary"]>>;
+}): DiffSection {
+  return {
+    binary,
+    id: `${path}:${kind}`,
+    kind,
+    loadState,
+    patch: "",
+    summary: {
+      ...summary,
+      message,
+      reason,
+    },
+  };
 }
 
 function resolveRepositoryPath(repoRoot: string, path: string) {
@@ -304,8 +366,17 @@ class GitRepositoryAdapter {
       .filter((url): url is string => Boolean(url));
   }
 
-  async readPatch(path: string, kind: DiffSection["kind"], untracked: boolean) {
-    return getPatch(this.repoRoot, path, kind, untracked);
+  async isTracked(path: string) {
+    try {
+      await this.git(["ls-files", "--error-unmatch", "--", path]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async readPatch(path: string, kind: DiffSection["kind"], untracked: boolean, forceLoad = false) {
+    return getPatch(this.repoRoot, path, kind, untracked, forceLoad);
   }
 
   async readCommitPatch(commit: string, path: string) {
@@ -320,10 +391,18 @@ class GitRepositoryAdapter {
       path,
     ]);
 
-    return {
-      binary: /Binary files .* differ/.test(patch),
-      patch,
-    };
+    const binary = /Binary files .* differ/.test(patch);
+    return binary
+      ? summarySection({
+          binary: true,
+          kind: "commit",
+          loadState: "unloadable",
+          message: "Binary file changed.",
+          path,
+          reason: "binary",
+          summary: { bytes: Buffer.byteLength(patch) },
+        })
+      : loadedSection(path, "commit", patch, false);
   }
 
   async readFile(path: string, source: ReviewSource) {
@@ -354,12 +433,80 @@ class GitRepositoryAdapter {
   }
 }
 
-async function createUntrackedPatch(repoRoot: string, path: string) {
+async function createUntrackedPatch(repoRoot: string, path: string, forceLoad = false) {
   const absolutePath = resolveRepositoryPath(repoRoot, path);
+  let stat;
+  try {
+    stat = await fs.lstat(absolutePath);
+  } catch (caught) {
+    const code = caught && typeof caught === "object" ? (caught as { code?: string }).code : "";
+    if (code === "ENOENT") {
+      return summarySection({
+        kind: "unstaged",
+        loadState: "error",
+        message: "File is missing from the working tree.",
+        path,
+        reason: "missing",
+      });
+    }
+    throw caught;
+  }
+
+  if (stat.isSymbolicLink()) {
+    return summarySection({
+      kind: "unstaged",
+      loadState: "unloadable",
+      message: "Symlink target changes are shown as a summary.",
+      path,
+      reason: "symlink",
+      summary: { bytes: stat.size },
+    });
+  }
+
+  if (stat.isDirectory()) {
+    return summarySection({
+      kind: "unstaged",
+      loadState: "unloadable",
+      message: "Directory changes are shown in the file tree.",
+      path,
+      reason: "directory",
+    });
+  }
+
+  if (stat.size > maxLoadableDiffByteThreshold) {
+    return summarySection({
+      kind: "unstaged",
+      loadState: "too-large",
+      message: "Text diff was skipped because the file is too large to render.",
+      path,
+      reason: "large",
+      summary: { bytes: stat.size },
+    });
+  }
+
+  if (!forceLoad && stat.size > eagerDiffByteThreshold) {
+    return summarySection({
+      kind: "unstaged",
+      loadState: "deferred",
+      message: "Diff content is available on demand.",
+      path,
+      reason: "large",
+      summary: { bytes: stat.size },
+    });
+  }
+
   const buffer = await fs.readFile(absolutePath);
 
   if (isBinaryBuffer(buffer)) {
-    return { binary: true, patch: "" };
+    return summarySection({
+      binary: true,
+      kind: "unstaged",
+      loadState: "unloadable",
+      message: "Binary file changed.",
+      path,
+      reason: "binary",
+      summary: { bytes: buffer.byteLength },
+    });
   }
 
   const contents = buffer.toString("utf8");
@@ -368,9 +515,10 @@ async function createUntrackedPatch(repoRoot: string, path: string) {
   const body = lines.map((line) => `+${line}`).join("\n");
   const noNewline = contents.endsWith("\n") ? "" : "\n\\ No newline at end of file";
 
-  return {
-    binary: false,
-    patch: [
+  return loadedSection(
+    path,
+    "unstaged",
+    [
       `diff --git a/${path} b/${path}`,
       "new file mode 100644",
       "index 0000000..0000000",
@@ -382,7 +530,8 @@ async function createUntrackedPatch(repoRoot: string, path: string) {
       .filter(Boolean)
       .join("\n")
       .concat(noNewline, "\n"),
-  };
+    false,
+  );
 }
 
 async function getPatch(
@@ -390,9 +539,10 @@ async function getPatch(
   path: string,
   kind: DiffSection["kind"],
   untracked: boolean,
+  forceLoad = false,
 ) {
   if (untracked) {
-    return createUntrackedPatch(repoRoot, path);
+    return createUntrackedPatch(repoRoot, path, forceLoad);
   }
 
   const args =
@@ -400,11 +550,44 @@ async function getPatch(
       ? ["diff", "--cached", "--patch", "--no-ext-diff", "--find-renames", "--", path]
       : ["diff", "--patch", "--no-ext-diff", "--find-renames", "--", path];
   const patch = await execGit(repoRoot, args);
+  const binary = /Binary files .* differ/.test(patch);
 
-  return {
-    binary: /Binary files .* differ/.test(patch),
-    patch,
-  };
+  if (binary) {
+    return summarySection({
+      binary: true,
+      kind,
+      loadState: "unloadable",
+      message: "Binary file changed.",
+      path,
+      reason: "binary",
+      summary: { bytes: Buffer.byteLength(patch) },
+    });
+  }
+
+  const patchBytes = Buffer.byteLength(patch);
+  if (patchBytes > maxLoadableDiffByteThreshold) {
+    return summarySection({
+      kind,
+      loadState: "too-large",
+      message: "Text diff was skipped because the patch is too large to render.",
+      path,
+      reason: "large",
+      summary: { bytes: patchBytes },
+    });
+  }
+
+  if (!forceLoad && patchBytes > eagerDiffByteThreshold) {
+    return summarySection({
+      kind,
+      loadState: "deferred",
+      message: "Diff content is available on demand.",
+      path,
+      reason: "large",
+      summary: summarizePatch(patch),
+    });
+  }
+
+  return loadedSection(path, kind, patch, false);
 }
 
 export async function readWorkingTreeState(launchPath: string): Promise<RepositoryState> {
@@ -418,27 +601,22 @@ export async function readWorkingTreeState(launchPath: string): Promise<Reposito
 
     if (item.staged) {
       const staged = await adapter.readPatch(item.path, "staged", false);
-      sections.push({
-        binary: staged.binary,
-        id: `${item.path}:staged`,
-        kind: "staged",
-        patch: staged.patch,
-      });
+      sections.push(staged);
     }
 
     if (item.unstaged) {
       const unstaged = await adapter.readPatch(item.path, "unstaged", item.untracked);
-      sections.push({
-        binary: unstaged.binary,
-        id: `${item.path}:unstaged`,
-        kind: "unstaged",
-        patch: unstaged.patch,
-      });
+      sections.push(unstaged);
     }
 
     files.push({
       fingerprint: fingerprint(
-        `${item.status}\n${item.oldPath ?? ""}\n${sections.map((section) => section.patch).join("\n")}`,
+        `${item.status}\n${item.oldPath ?? ""}\n${sections
+          .map(
+            (section) =>
+              `${section.id}:${section.loadState}:${section.patch}:${section.summary?.message ?? ""}`,
+          )
+          .join("\n")}`,
       ),
       oldPath: item.oldPath,
       path: item.path,
@@ -492,14 +670,7 @@ async function readCommitState(launchPath: string, ref: string): Promise<Reposit
       fingerprint: fingerprint(`${commit}\n${item.oldPath ?? ""}\n${section.patch}`),
       oldPath: item.oldPath,
       path: item.path,
-      sections: [
-        {
-          binary: section.binary,
-          id: `${item.path}:${commit}`,
-          kind: "commit",
-          patch: section.patch,
-        },
-      ],
+      sections: [{ ...section, id: `${item.path}:${commit}` }],
       status: item.status,
     });
   }
@@ -588,7 +759,15 @@ async function readPullRequestState(
             binary: !file.patch,
             id: `${file.filename}:pull-request:${pullRequest.number}`,
             kind: "pull-request",
+            loadState: file.patch ? "loaded" : "unloadable",
             patch,
+            summary: file.patch
+              ? summarizePatch(patch)
+              : {
+                  bytes: Buffer.byteLength(patch),
+                  message: "Binary file changed.",
+                  reason: "binary",
+                },
           },
         ],
         status,
@@ -621,6 +800,28 @@ export function readRepositoryState(
   if (source.type === "commit") return readCommitState(launchPath, source.ref);
   if (source.type === "pull-request") return readPullRequestState(launchPath, source);
   return readWorkingTreeState(launchPath);
+}
+
+export async function readDiffSectionContent(
+  launchPath: string,
+  path: string,
+  kind: DiffSection["kind"],
+  source: ReviewSource = { type: "working-tree" },
+): Promise<DiffSection> {
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+
+  if (source.type === "working-tree") {
+    const untracked = kind === "unstaged" && !(await adapter.isTracked(path));
+    return adapter.readPatch(path, kind, untracked, true);
+  }
+
+  if (source.type === "commit") {
+    const commit = await adapter.resolveCommit(source.ref);
+    const section = await adapter.readCommitPatch(commit, path);
+    return { ...section, id: `${path}:${commit}` };
+  }
+
+  throw new Error("Pull request diff sections cannot be loaded from the local repository.");
 }
 
 export async function readRepositoryFile(

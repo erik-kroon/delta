@@ -699,7 +699,7 @@
   cursor: pointer;
   display: grid;
   gap: 8px;
-  grid-template-columns: 26px minmax(0, 1fr) auto auto;
+  grid-template-columns: 26px minmax(0, 1fr) auto auto auto;
   min-height: 44px;
   padding: 6px 14px 6px 10px;
 }
@@ -776,6 +776,16 @@
   margin-top: 2px;
 }
 
+.delta-section-summary {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .delta-status-badge,
 .delta-section-badge,
 .delta-viewed-button {
@@ -802,6 +812,33 @@
 
 .delta-file-stats .negative {
   color: var(--red);
+}
+
+.delta-load-section-button {
+  -webkit-app-region: no-drag;
+  align-items: center;
+  background: var(--control);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 650;
+  gap: 5px;
+  height: 26px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0 8px;
+}
+
+.delta-load-section-button:hover {
+  background: var(--control-hover);
+}
+
+.delta-load-section-button:focus-visible {
+  outline: 2px solid #149dfb;
+  outline-offset: 1px;
 }
 
 .delta-status-badge,
