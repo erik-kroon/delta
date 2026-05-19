@@ -571,7 +571,9 @@ function FileTreePane(props: {
         }
 
         [data-item-section='icon'] {
+          align-items: center;
           color: var(--muted);
+          display: inline-flex;
           opacity: 0.9;
         }
 
@@ -581,7 +583,14 @@ function FileTreePane(props: {
         }
 
         [data-item-section='content'] {
+          align-items: center;
+          display: inline-flex;
+          line-height: 1.25;
           min-width: 0;
+        }
+
+        [data-item-section='content'] [data-truncate-content] {
+          line-height: inherit;
         }
 
         [data-item-section='decoration'] {
@@ -594,13 +603,25 @@ function FileTreePane(props: {
           font-weight: 650;
           justify-content: flex-end;
           letter-spacing: 0;
+          line-height: 1;
           min-width: 54px;
           padding-inline-start: 8px;
+          transform: translateY(1px);
         }
 
         [data-item-section='decoration'] > span {
+          align-items: center;
+          display: inline-flex;
           gap: 6px;
+          justify-content: flex-end;
+          line-height: 1;
           width: 100%;
+        }
+
+        [data-item-section='decoration'] span span {
+          align-items: center;
+          display: inline-flex;
+          line-height: 1;
         }
 
         [data-item-section='decoration'] .positive {
@@ -629,9 +650,12 @@ function FileTreePane(props: {
         }
 
         [data-item-git-status] > [data-item-section='git'] {
+          align-items: center;
+          display: inline-flex;
           flex: 0 0 18px;
           font-size: 13px;
           justify-content: flex-end;
+          line-height: 1;
           width: 18px;
         }
       `,
@@ -744,6 +768,7 @@ function BrowserBar(props: {
   return (
     <header class="browser-bar" classList={{ "desktop-window-chrome": isDesktopShell }}>
       <div class="browser-location">
+        {/* Kept in markup so the Delta mark can be restored without rebuilding the titlebar. */}
         <svg class="app-mark" viewBox="0 0 32 32" aria-hidden>
           <path d="M16 5 29 27H3L16 5Z" fill="currentColor" />
           <path d="M16 14 22 24H10L16 14Z" fill="var(--browser-bg)" />
@@ -919,7 +944,6 @@ function DiffCodeView(props: {
       viewed: props.viewed,
     }),
   );
-
   function firstItemIdForPath(path: string) {
     const file = props.files.find((candidate) => candidate.path === path);
     const section = file?.sections[0];

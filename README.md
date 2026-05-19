@@ -2,7 +2,7 @@
 
 Local Git diff viewer built with Solid, Electrobun, `@pierre/trees`, and `@pierre/diffs`.
 
-![Delta diff viewer screenshot](docs/images/delta-screenshot.jpg)
+![Delta diff viewer screenshot](docs/images/delta-screenshot_2.jpg)
 
 ## Features
 

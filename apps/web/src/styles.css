@@ -75,7 +75,7 @@
 
 .delta-shell {
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr);
+  grid-template-rows: 38px minmax(0, 1fr);
   height: 100%;
   min-width: 0;
   overflow: hidden;
@@ -83,28 +83,48 @@
 
 .browser-bar {
   -webkit-app-region: drag;
+  -webkit-user-select: none;
   align-items: center;
   background: var(--browser-bg);
   border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
   display: grid;
-  gap: 32px;
+  gap: 24px;
   grid-template-columns: minmax(0, 1fr) auto auto;
+  height: 38px;
   min-width: 0;
-  padding: 0 18px 0 14px;
+  padding: 0 12px 0 14px;
+  position: relative;
+  user-select: none;
+}
+
+.browser-bar::before {
+  -webkit-app-region: drag;
+  content: "";
+  inset: 0;
+  position: absolute;
+  z-index: 0;
 }
 
 .browser-bar.desktop-window-chrome {
-  padding-left: 88px;
+  padding-left: 86px;
+}
+
+.browser-location,
+.browser-review-shortcuts,
+.browser-tools {
+  position: relative;
+  z-index: 1;
 }
 
 .browser-location {
+  -webkit-app-region: drag;
   align-items: center;
   color: var(--text);
   display: grid;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 500;
-  gap: 14px;
-  grid-template-columns: 25px minmax(0, max-content);
+  grid-template-columns: minmax(0, max-content);
   height: 100%;
   line-height: 1;
   min-width: 0;
@@ -119,13 +139,13 @@
 
 .app-mark {
   color: var(--text);
-  display: block;
+  display: none;
   height: 25px;
   width: 25px;
 }
 
 .browser-review-shortcuts {
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
   align-items: center;
   color: var(--muted);
   display: flex;
@@ -145,17 +165,17 @@
 }
 
 .browser-tools {
+  -webkit-app-region: drag;
   align-items: center;
   display: flex;
-  gap: 8px;
-  margin-left: 18px;
+  gap: 6px;
+  margin-left: 12px;
 }
 
 .browser-toolbar-spacer {
-  -webkit-app-region: no-drag;
   display: inline-flex;
   flex: none;
-  width: 22px;
+  width: 14px;
 }
 
 .bar-icon-button,
@@ -168,10 +188,10 @@
   color: var(--muted);
   cursor: pointer;
   display: inline-flex;
-  height: 28px;
+  height: 26px;
   justify-content: center;
   padding: 0;
-  width: 28px;
+  width: 26px;
 }
 
 .bar-icon-button {
@@ -180,9 +200,9 @@
 
 .app-action-icon {
   display: block;
-  height: 18px;
+  height: 17px;
   pointer-events: none;
-  width: 18px;
+  width: 17px;
 }
 
 .top-action-button {
@@ -198,7 +218,14 @@
   width: auto;
 }
 
-.bar-icon-button:not(:disabled):hover,
+.bar-icon-button:not(:disabled):hover {
+  color: var(--text);
+}
+
+.bar-icon-button:not(:disabled):hover .app-action-icon {
+  opacity: 0.82;
+}
+
 .top-action-button:hover {
   background: var(--control-hover);
   color: var(--text);
@@ -206,7 +233,6 @@
 
 .bar-icon-button[aria-pressed="true"],
 .bar-icon-button.active {
-  background: var(--control);
   color: var(--text);
 }
 
@@ -866,7 +892,7 @@
   }
 
   .browser-bar.desktop-window-chrome {
-    padding-left: 92px;
+    padding-left: 86px;
   }
 
   .browser-tools {
@@ -901,22 +927,21 @@
 
 @media (max-width: 700px) {
   .delta-shell {
-    grid-template-rows: 44px minmax(0, 1fr);
+    grid-template-rows: 38px minmax(0, 1fr);
   }
 
   .browser-bar.desktop-window-chrome {
-    padding-left: 88px;
+    padding-left: 84px;
   }
 
   .browser-location {
     font-size: 15px;
-    gap: 9px;
-    grid-template-columns: 26px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .app-mark {
-    height: 26px;
-    width: 26px;
+    height: 25px;
+    width: 25px;
   }
 
   .top-action-button span {
