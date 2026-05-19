@@ -28,6 +28,28 @@ type StatusItem = {
   untracked: boolean;
 };
 
+type GitHubPullRequestUrl = {
+  number: number;
+  owner: string;
+  repo: string;
+  url: string;
+};
+
+type GitHubPullRequestFile = {
+  filename: string;
+  patch?: string;
+  previous_filename?: string;
+  status: string;
+};
+
+type GitHubPullRequestDetails = {
+  base?: { sha?: string };
+  head?: { sha?: string };
+  html_url?: string;
+  number?: number;
+  title?: string;
+};
+
 function fingerprint(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
@@ -38,6 +60,14 @@ async function execGit(repoPath: string, args: string[]) {
     maxBuffer: 1024 * 1024 * 64,
   });
   return stdout;
+}
+
+async function execGhJson(args: string[]) {
+  const { stdout } = await execFileAsync("gh", args, {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 64,
+  });
+  return JSON.parse(stdout) as unknown;
 }
 
 async function execGitBuffer(repoPath: string, args: string[]) {
@@ -72,6 +102,76 @@ function normalizeStatus(statusCode: string | undefined): GitFileStatus {
   if (statusCode === "D") return "deleted";
   if (statusCode === "R" || statusCode === "C") return "renamed";
   return "modified";
+}
+
+export function normalizePullRequestFileStatus(status: string): GitFileStatus {
+  if (status === "added") return "added";
+  if (status === "removed") return "deleted";
+  if (status === "renamed") return "renamed";
+  return "modified";
+}
+
+export function parseGitHubPullRequestUrl(sourceUrl: string): GitHubPullRequestUrl {
+  let url: URL;
+
+  try {
+    url = new URL(sourceUrl);
+  } catch {
+    throw new Error("Pull request source must be a GitHub pull request URL.");
+  }
+
+  const parts = url.pathname.split("/").filter(Boolean);
+  const [owner, repo, pullSegment, numberText] = parts;
+  const number = Number(numberText);
+
+  if (
+    url.hostname !== "github.com" ||
+    !owner ||
+    !repo ||
+    pullSegment !== "pull" ||
+    !Number.isInteger(number) ||
+    number <= 0
+  ) {
+    throw new Error("Pull request source must be a GitHub pull request URL.");
+  }
+
+  return {
+    number,
+    owner,
+    repo: repo.replace(/\.git$/, ""),
+    url: `https://github.com/${owner}/${repo.replace(/\.git$/, "")}/pull/${number}`,
+  };
+}
+
+function parseGitHubRemoteUrl(remoteUrl: string) {
+  const trimmed = remoteUrl.trim();
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshMatch?.[1] && sshMatch[2]) {
+    return { owner: sshMatch[1], repo: sshMatch[2].replace(/\.git$/, "") };
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.hostname !== "github.com") return undefined;
+    const [owner, repo] = url.pathname.split("/").filter(Boolean);
+    if (!owner || !repo) return undefined;
+    return { owner, repo: repo.replace(/\.git$/, "") };
+  } catch {
+    return undefined;
+  }
+}
+
+export function githubRemoteMatchesPullRequest(
+  remoteUrls: ReadonlyArray<string>,
+  pullRequest: Pick<GitHubPullRequestUrl, "owner" | "repo">,
+) {
+  return remoteUrls.some((remoteUrl) => {
+    const remote = parseGitHubRemoteUrl(remoteUrl);
+    return (
+      remote?.owner.toLowerCase() === pullRequest.owner.toLowerCase() &&
+      remote.repo.toLowerCase() === pullRequest.repo.toLowerCase()
+    );
+  });
 }
 
 function parseStatus(raw: string): StatusItem[] {
@@ -197,6 +297,13 @@ class GitRepositoryAdapter {
     );
   }
 
+  async readRemoteUrls() {
+    return (await this.git(["remote", "-v"]))
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/)[1])
+      .filter((url): url is string => Boolean(url));
+  }
+
   async readPatch(path: string, kind: DiffSection["kind"], untracked: boolean) {
     return getPatch(this.repoRoot, path, kind, untracked);
   }
@@ -225,6 +332,10 @@ class GitRepositoryAdapter {
     if (source.type === "commit") {
       const commit = await this.resolveCommit(source.ref);
       return this.gitBuffer(["show", `${commit}:${path}`]);
+    }
+
+    if (source.type === "pull-request") {
+      throw new Error("Pull request review sources only expose changed file patches.");
     }
 
     return fs.readFile(absolutePath);
@@ -403,13 +514,113 @@ async function readCommitState(launchPath: string, ref: string): Promise<Reposit
   };
 }
 
+async function readPullRequestDetails(pullRequest: GitHubPullRequestUrl) {
+  return (await execGhJson([
+    "api",
+    `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}`,
+  ])) as GitHubPullRequestDetails;
+}
+
+async function readPullRequestFiles(pullRequest: GitHubPullRequestUrl) {
+  const pages = (await execGhJson([
+    "api",
+    "--paginate",
+    "--slurp",
+    `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}/files`,
+  ])) as GitHubPullRequestFile[] | GitHubPullRequestFile[][];
+
+  return Array.isArray(pages[0])
+    ? (pages as GitHubPullRequestFile[][]).flat()
+    : (pages as GitHubPullRequestFile[]);
+}
+
+function patchForPullRequestFile(file: GitHubPullRequestFile) {
+  if (file.patch) return file.patch;
+
+  const previousPath = file.previous_filename ?? file.filename;
+  return [
+    `diff --git a/${previousPath} b/${file.filename}`,
+    `Binary files a/${previousPath} and b/${file.filename} differ`,
+    "",
+  ].join("\n");
+}
+
+async function readPullRequestState(
+  launchPath: string,
+  source: Extract<ReviewSource, { type: "pull-request" }>,
+): Promise<RepositoryState> {
+  const adapter = await GitRepositoryAdapter.fromLaunchPath(launchPath);
+  const pullRequest = parseGitHubPullRequestUrl(source.url);
+  const remoteUrls = await adapter.readRemoteUrls();
+
+  if (!githubRemoteMatchesPullRequest(remoteUrls, pullRequest)) {
+    throw new Error(
+      `Pull request ${pullRequest.url} does not match any GitHub remote for this repository.`,
+    );
+  }
+
+  let details: GitHubPullRequestDetails;
+  let pullRequestFiles: GitHubPullRequestFile[];
+
+  try {
+    [details, pullRequestFiles] = await Promise.all([
+      readPullRequestDetails(pullRequest),
+      readPullRequestFiles(pullRequest),
+    ]);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    throw new Error(`Unable to read GitHub pull request files with gh: ${message}`);
+  }
+
+  const files = pullRequestFiles
+    .map<ChangedFile>((file) => {
+      const patch = patchForPullRequestFile(file);
+      const status = normalizePullRequestFileStatus(file.status);
+
+      return {
+        fingerprint: fingerprint(
+          `${pullRequest.url}\n${status}\n${file.previous_filename ?? ""}\n${patch}`,
+        ),
+        oldPath: file.previous_filename,
+        path: file.filename,
+        sections: [
+          {
+            binary: !file.patch,
+            id: `${file.filename}:pull-request:${pullRequest.number}`,
+            kind: "pull-request",
+            patch,
+          },
+        ],
+        status,
+      };
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
+
+  return {
+    files,
+    generatedAt: Date.now(),
+    launchPath,
+    root: adapter.root,
+    source: {
+      baseRefOid: details.base?.sha,
+      headRefOid: details.head?.sha,
+      number: details.number ?? pullRequest.number,
+      repository: `${pullRequest.owner}/${pullRequest.repo}`,
+      title: details.title,
+      type: "pull-request",
+      url: details.html_url ?? pullRequest.url,
+    },
+    treeFiles: files.map((file) => file.path),
+  };
+}
+
 export function readRepositoryState(
   launchPath: string,
   source: ReviewSource = { type: "working-tree" },
 ) {
-  return source.type === "commit"
-    ? readCommitState(launchPath, source.ref)
-    : readWorkingTreeState(launchPath);
+  if (source.type === "commit") return readCommitState(launchPath, source.ref);
+  if (source.type === "pull-request") return readPullRequestState(launchPath, source);
+  return readWorkingTreeState(launchPath);
 }
 
 export async function readRepositoryFile(

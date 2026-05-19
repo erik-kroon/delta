@@ -6,7 +6,14 @@ import { promisify } from "node:util";
 
 import { afterEach, expect, test } from "bun:test";
 
-import { readRepositoryFile, readRepositoryState, readWorkingTreeState } from "./git-state";
+import {
+  githubRemoteMatchesPullRequest,
+  normalizePullRequestFileStatus,
+  parseGitHubPullRequestUrl,
+  readRepositoryFile,
+  readRepositoryState,
+  readWorkingTreeState,
+} from "./git-state";
 
 const execFileAsync = promisify(execFile);
 const fixtureRoots: string[] = [];
@@ -113,4 +120,42 @@ test("reads repository files and rejects paths that escape the repository", asyn
   await expect(readRepositoryFile(root, "../outside.txt")).rejects.toThrow(
     "Repository file path escapes the repository root.",
   );
+});
+
+test("parses GitHub pull request URLs", () => {
+  expect(parseGitHubPullRequestUrl("https://github.com/pierre/delta/pull/42")).toEqual({
+    number: 42,
+    owner: "pierre",
+    repo: "delta",
+    url: "https://github.com/pierre/delta/pull/42",
+  });
+
+  expect(() => parseGitHubPullRequestUrl("https://github.com/pierre/delta/issues/42")).toThrow(
+    "Pull request source must be a GitHub pull request URL.",
+  );
+});
+
+test("matches GitHub PR URLs against HTTPS and SSH remotes", () => {
+  const pullRequest = parseGitHubPullRequestUrl("https://github.com/pierre/delta/pull/42");
+
+  expect(
+    githubRemoteMatchesPullRequest(
+      ["https://github.com/pierre/delta.git", "git@github.com:other/project.git"],
+      pullRequest,
+    ),
+  ).toBe(true);
+  expect(githubRemoteMatchesPullRequest(["git@github.com:pierre/delta.git"], pullRequest)).toBe(
+    true,
+  );
+  expect(githubRemoteMatchesPullRequest(["https://github.com/pierre/other.git"], pullRequest)).toBe(
+    false,
+  );
+});
+
+test("normalizes GitHub pull request file statuses", () => {
+  expect(normalizePullRequestFileStatus("added")).toBe("added");
+  expect(normalizePullRequestFileStatus("removed")).toBe("deleted");
+  expect(normalizePullRequestFileStatus("renamed")).toBe("renamed");
+  expect(normalizePullRequestFileStatus("modified")).toBe("modified");
+  expect(normalizePullRequestFileStatus("changed")).toBe("modified");
 });
