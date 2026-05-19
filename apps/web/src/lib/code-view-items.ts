@@ -33,10 +33,19 @@ export function previewItemId(path: string) {
   return `file:${path}`;
 }
 
-function createBinaryFileDiff(file: ChangedFile, section: DiffSection): FileDiffMetadata {
+function sectionSummaryText(section: DiffSection) {
+  if (section.loadState === "deferred") return section.summary?.message ?? "Diff deferred.";
+  if (section.loadState === "too-large") return section.summary?.message ?? "Diff too large.";
+  if (section.loadState === "error") return section.summary?.message ?? "Diff failed to load.";
+  if (section.summary?.message) return section.summary.message;
+  return section.binary ? "Binary file changed." : "Diff content unavailable.";
+}
+
+function createSummaryFileDiff(file: ChangedFile, section: DiffSection): FileDiffMetadata {
+  const text = `${sectionSummaryText(section)}\n`;
   return {
-    additionLines: ["Binary file changed\n"],
-    cacheKey: `binary:${file.fingerprint}:${section.id}`,
+    additionLines: [text],
+    cacheKey: `summary:${file.fingerprint}:${section.id}:${section.loadState}:${section.summary?.message ?? ""}`,
     deletionLines: [],
     hunks: [
       {
@@ -67,7 +76,7 @@ function createBinaryFileDiff(file: ChangedFile, section: DiffSection): FileDiff
         unifiedLineStart: 0,
       },
     ],
-    isPartial: true,
+    isPartial: section.loadState !== "loaded",
     name: file.path,
     prevName: file.oldPath,
     splitLineCount: 1,
@@ -81,15 +90,15 @@ export function parseSectionDiff(file: ChangedFile, section: DiffSection): FileD
   if (cached) return cached;
 
   let parsedDiff: FileDiffMetadata;
-  if (section.binary) {
-    parsedDiff = createBinaryFileDiff(file, section);
+  if (section.binary || section.loadState !== "loaded") {
+    parsedDiff = createSummaryFileDiff(file, section);
     parsedSectionDiffs.set(section, parsedDiff);
     return parsedDiff;
   }
 
   const parsedFile = parsePatchFiles(section.patch, section.id)[0]?.files[0];
   if (!parsedFile) {
-    parsedDiff = createBinaryFileDiff(file, section);
+    parsedDiff = createSummaryFileDiff(file, section);
     parsedSectionDiffs.set(section, parsedDiff);
     return parsedDiff;
   }
@@ -153,7 +162,7 @@ export function buildCodeViewItemModel({
         fileDiff,
         id,
         type: "diff",
-        version: `${file.fingerprint}:${section.id}:${isCollapsed ? "closed" : "open"}:${isViewed ? "viewed" : "pending"}:${index}`,
+        version: `${file.fingerprint}:${section.id}:${section.loadState}:${section.summary?.message ?? ""}:${isCollapsed ? "closed" : "open"}:${isViewed ? "viewed" : "pending"}:${index}`,
       });
     }
   }

@@ -1,10 +1,24 @@
 export type DiffSectionKind = "commit" | "pull-request" | "staged" | "unstaged";
 
+export type DiffSectionLoadState = "loaded" | "deferred" | "too-large" | "unloadable" | "error";
+
+export type DiffSectionSummary = {
+  additions?: number;
+  bytes?: number;
+  deletions?: number;
+  message?: string;
+  reason?: "binary" | "directory" | "error" | "large" | "missing" | "symlink";
+};
+
 export type DiffSection = {
   binary: boolean;
   id: string;
   kind: DiffSectionKind;
+  loadState: DiffSectionLoadState;
+  newFileContent?: string;
+  oldFileContent?: string;
   patch: string;
+  summary?: DiffSectionSummary;
 };
 
 export type GitFileStatus = "added" | "deleted" | "modified" | "renamed" | "untracked";
@@ -146,7 +160,13 @@ export const sampleRepositoryState: RepositoryState = {
       fingerprint: "sample-route",
       path: "apps/web/src/routes/index.tsx",
       sections: [
-        { binary: false, id: "sample-route:unstaged", kind: "unstaged", patch: samplePatch },
+        {
+          binary: false,
+          id: "sample-route:unstaged",
+          kind: "unstaged",
+          loadState: "loaded",
+          patch: samplePatch,
+        },
       ],
       status: "modified",
     },
@@ -158,6 +178,7 @@ export const sampleRepositoryState: RepositoryState = {
           binary: false,
           id: "sample-repository:unstaged",
           kind: "unstaged",
+          loadState: "loaded",
           patch: sampleTreePatch,
         },
       ],
@@ -191,6 +212,7 @@ export const samplePullRequestRepositoryState: RepositoryState = {
           binary: false,
           id: "sample-pr-delta-client:pull-request",
           kind: "pull-request",
+          loadState: "loaded",
           patch: samplePullRequestPatch,
         },
       ],

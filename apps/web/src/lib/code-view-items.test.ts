@@ -32,7 +32,7 @@ index 2222222..3333333 100644
 `;
 
 function section(id: string, kind: DiffSection["kind"], patch: string): DiffSection {
-  return { binary: false, id, kind, patch };
+  return { binary: false, id, kind, loadState: "loaded", patch };
 }
 
 function changedFile(patch: Partial<ChangedFile> = {}): ChangedFile {
@@ -64,8 +64,8 @@ describe("buildCodeViewItemModel", () => {
       "diff:src/app.ts:unstaged",
     ]);
     expect(model.items.map((item) => item.version)).toEqual([
-      "fingerprint-1:src/app.ts:staged:open:pending:0",
-      "fingerprint-1:src/app.ts:unstaged:open:pending:1",
+      "fingerprint-1:src/app.ts:staged:loaded::open:pending:0",
+      "fingerprint-1:src/app.ts:unstaged:loaded::open:pending:1",
     ]);
     expect(model.fileStartItemIdByPath.get("src/app.ts")).toBe("diff:src/app.ts:staged");
     expect(model.itemMetadata.get("diff:src/app.ts:unstaged")).toMatchObject({
@@ -91,7 +91,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: true,
       id: "diff:src/app.ts:staged",
       type: "diff",
-      version: "fingerprint-1:src/app.ts:staged:closed:pending:0",
+      version: "fingerprint-1:src/app.ts:staged:loaded::closed:pending:0",
     });
     expect(model.itemMetadata.get("diff:src/app.ts:staged")).toMatchObject({
       isCollapsed: true,
@@ -110,7 +110,7 @@ describe("buildCodeViewItemModel", () => {
     });
 
     expect(model.items).toHaveLength(1);
-    expect(model.items[0]?.version).toBe("fingerprint-1:src/app.ts:staged:closed:viewed:0");
+    expect(model.items[0]?.version).toBe("fingerprint-1:src/app.ts:staged:loaded::closed:viewed:0");
     expect(model.itemMetadata.get("diff:src/app.ts:staged")).toMatchObject({
       isCollapsed: true,
       isViewed: true,
@@ -135,7 +135,9 @@ describe("buildCodeViewItemModel", () => {
       binary: true,
       id: "assets/logo.png:unstaged",
       kind: "unstaged",
+      loadState: "unloadable",
       patch: "Binary files a/assets/logo.png and b/assets/logo.png differ\n",
+      summary: { message: "Binary file changed.", reason: "binary" },
     };
     const file = changedFile({
       fingerprint: "binary-fingerprint",
@@ -154,13 +156,55 @@ describe("buildCodeViewItemModel", () => {
     expect(item).toMatchObject({
       id: "diff:assets/logo.png:unstaged",
       type: "diff",
-      version: "binary-fingerprint:assets/logo.png:unstaged:open:pending:0",
+      version:
+        "binary-fingerprint:assets/logo.png:unstaged:unloadable:Binary file changed.:open:pending:0",
     });
     expect(item?.type === "diff" ? item.fileDiff : undefined).toMatchObject({
-      additionLines: ["Binary file changed\n"],
-      cacheKey: "binary:binary-fingerprint:assets/logo.png:unstaged",
+      additionLines: ["Binary file changed.\n"],
+      cacheKey:
+        "summary:binary-fingerprint:assets/logo.png:unstaged:unloadable:Binary file changed.",
       name: "assets/logo.png",
       type: "change",
+    });
+  });
+
+  it("projects deferred sections as summary diffs with load-state versions", () => {
+    const deferredSection: DiffSection = {
+      binary: false,
+      id: "large.txt:unstaged",
+      kind: "unstaged",
+      loadState: "deferred",
+      patch: "",
+      summary: {
+        additions: 1200,
+        bytes: 300000,
+        message: "Diff content is available on demand.",
+        reason: "large",
+      },
+    };
+    const file = changedFile({
+      fingerprint: "large-fingerprint",
+      path: "large.txt",
+      sections: [deferredSection],
+      status: "untracked",
+    });
+    const model = buildCodeViewItemModel({
+      collapsed: new Set(),
+      files: [file],
+      previewFile: null,
+      viewed: {},
+    });
+
+    expect(model.items[0]).toMatchObject({
+      id: "diff:large.txt:unstaged",
+      type: "diff",
+      version:
+        "large-fingerprint:large.txt:unstaged:deferred:Diff content is available on demand.:open:pending:0",
+    });
+    expect(model.items[0]?.type === "diff" ? model.items[0].fileDiff : undefined).toMatchObject({
+      additionLines: ["Diff content is available on demand.\n"],
+      isPartial: true,
+      name: "large.txt",
     });
   });
 

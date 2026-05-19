@@ -4,6 +4,7 @@ import type { DeltaRPCSchema } from "../../../web/src/lib/delta-rpc-schema";
 import {
   listRepositoryHistory,
   openRepositoryTarget,
+  readDiffSectionContent,
   readRepositoryFile,
   readRepositoryState,
   showInRepositoryFolder,
@@ -36,6 +37,8 @@ const rpc = BrowserView.defineRPC<DeltaRPCSchema>({
     messages: {},
     requests: {
       getRepositoryHistory: ({ limit } = {}) => listRepositoryHistory(launchPath, limit),
+      getDiffSectionContent: ({ path, kind, source }) =>
+        readDiffSectionContent(launchPath, path, kind, source),
       getRepositoryFile: ({ path, source }) => readRepositoryFile(launchPath, path, source),
       getRepositoryState: ({ source } = {}) => readRepositoryState(launchPath, source),
       showInFolder: ({ path }) =>

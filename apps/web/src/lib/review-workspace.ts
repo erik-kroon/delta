@@ -3,6 +3,7 @@ import { createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { deltaClient } from "@/lib/delta-client";
 import type {
   ChangedFile,
+  DiffSection,
   OpenRepositoryTarget,
   RepositoryFile,
   RepositoryState,
@@ -190,6 +191,94 @@ export function createReviewWorkspace(options: ReviewWorkspaceOptions) {
     });
   }
 
+  async function loadDiffSection(file: ChangedFile, section: DiffSection) {
+    if (section.loadState !== "deferred") return;
+    const currentState = state();
+    if (!currentState) return;
+
+    setState((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        files: current.files.map((candidate) =>
+          candidate.path === file.path
+            ? {
+                ...candidate,
+                sections: candidate.sections.map((candidateSection) =>
+                  candidateSection.id === section.id
+                    ? {
+                        ...candidateSection,
+                        loadState: "deferred",
+                        summary: {
+                          ...candidateSection.summary,
+                          message: "Loading diff content...",
+                        },
+                      }
+                    : candidateSection,
+                ),
+              }
+            : candidate,
+        ),
+      };
+    });
+
+    try {
+      const loaded = await deltaClient.getDiffSectionContent(
+        file.path,
+        section.kind,
+        currentState.source,
+      );
+      setState((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          files: current.files.map((candidate) =>
+            candidate.path === file.path
+              ? {
+                  ...candidate,
+                  fingerprint: `${candidate.fingerprint}:${loaded.loadState}:${loaded.summary?.message ?? ""}:${loaded.patch.length}`,
+                  sections: candidate.sections.map((candidateSection) =>
+                    candidateSection.id === section.id
+                      ? { ...loaded, id: section.id }
+                      : candidateSection,
+                  ),
+                }
+              : candidate,
+          ),
+        };
+      });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setState((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          files: current.files.map((candidate) =>
+            candidate.path === file.path
+              ? {
+                  ...candidate,
+                  sections: candidate.sections.map((candidateSection) =>
+                    candidateSection.id === section.id
+                      ? {
+                          ...candidateSection,
+                          loadState: "error",
+                          patch: "",
+                          summary: {
+                            ...candidateSection.summary,
+                            message,
+                            reason: "error",
+                          },
+                        }
+                      : candidateSection,
+                  ),
+                }
+              : candidate,
+          ),
+        };
+      });
+    }
+  }
+
   function toggleSelectedFileViewed() {
     const file = selectedChangedFile();
     if (!file) return;
@@ -222,6 +311,7 @@ export function createReviewWorkspace(options: ReviewWorkspaceOptions) {
     diffStats,
     error,
     files,
+    loadDiffSection,
     moveSelectedFile,
     openRepository,
     previewError,
