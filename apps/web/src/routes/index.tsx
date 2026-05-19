@@ -22,10 +22,21 @@ import {
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 
 import { KbdShortcut } from "@/components/kbd";
-import { buildCodeViewItemModel, diffItemId } from "@/lib/code-view-items";
+import {
+  buildCodeViewItemModel,
+  diffItemId,
+  type ReviewAnnotationMetadata,
+} from "@/lib/code-view-items";
 import { createReviewWorkspace, type ScrollTarget } from "@/lib/review-workspace";
 import type { OpenRepositoryTarget } from "@/lib/repository";
-import type { ChangedFile, DiffSection, GitFileStatus, RepositoryFile } from "@/lib/repository";
+import type {
+  ChangedFile,
+  DiffSection,
+  GitFileStatus,
+  PullRequestReviewComment,
+  RepositoryFile,
+  ReviewSource,
+} from "@/lib/repository";
 
 export const Route = createFileRoute("/")({
   component: DeltaApp,
@@ -136,6 +147,81 @@ const codeViewUnsafeCSS = `
   [data-diffs-header='custom'] slot {
     display: block;
   }
+
+  .review-comment-thread {
+    border-left: 2px solid #8250df;
+    display: grid;
+    gap: 8px;
+    margin: 8px 16px 10px;
+    max-width: min(760px, calc(100% - 32px));
+    padding-left: 10px;
+  }
+
+  .review-comment {
+    align-items: start;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .review-comment-avatar {
+    align-items: center;
+    background: var(--control);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    color: var(--muted);
+    display: inline-flex;
+    font: 700 11px/1 var(--diffs-header-font-family);
+    height: 24px;
+    justify-content: center;
+    width: 24px;
+  }
+
+  .review-comment-body {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--diffs-header-font-family);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .review-comment-header {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    display: flex;
+    font-size: 12px;
+    gap: 8px;
+    min-width: 0;
+    padding: 7px 9px;
+  }
+
+  .review-comment-header strong {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .review-comment-badge {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: auto;
+    padding: 2px 6px;
+    text-transform: uppercase;
+  }
+
+  .review-comment-body p {
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+    padding: 9px;
+    white-space: pre-wrap;
+  }
 `;
 
 function compactPath(path: string) {
@@ -156,6 +242,35 @@ function compactPath(path: string) {
 function repositoryName(path: string | undefined) {
   if (!path) return "Loading";
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function sourceLabel(root: string | undefined, source: ReviewSource | undefined) {
+  if (source?.type === "pull-request") {
+    const number = source.number ? `#${source.number}` : "PR";
+    const repository = source.repository ? `${source.repository} ` : "";
+    return `${repository}${number}`;
+  }
+
+  if (source?.type === "commit") {
+    return source.ref.slice(0, 12);
+  }
+
+  return repositoryName(root);
+}
+
+function sourceTitle(root: string | undefined, source: ReviewSource | undefined) {
+  if (source?.type === "pull-request") {
+    const title = source.title ? `: ${source.title}` : "";
+    const repository = source.repository ? `${source.repository} ` : "";
+    const identifier = source.number ? `#${source.number}` : source.url;
+    return `Pull request ${repository}${identifier}${title}`;
+  }
+
+  if (source?.type === "commit") {
+    return `Commit ${source.ref}`;
+  }
+
+  return root ?? "Loading repository";
 }
 
 function formatCount(count: number) {
@@ -467,6 +582,64 @@ function createFileHeader({
   return header;
 }
 
+function formatReviewCommentDate(value: string | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
+}
+
+function createReviewAnnotation(
+  metadata: ReviewAnnotationMetadata | undefined,
+  commentsById: ReadonlyMap<string, PullRequestReviewComment>,
+) {
+  const comments = (metadata?.commentIds ?? [])
+    .map((commentId) => commentsById.get(commentId))
+    .filter((comment): comment is PullRequestReviewComment => comment != null);
+
+  if (comments.length === 0) return undefined;
+
+  const thread = document.createElement("div");
+  thread.className = "review-comment-thread read-only";
+
+  for (const comment of comments) {
+    const item = document.createElement("article");
+    item.className = "review-comment";
+
+    const avatar = document.createElement("span");
+    avatar.className = "review-comment-avatar";
+    avatar.textContent = (comment.author?.login ?? "G").trim()[0]?.toUpperCase() ?? "G";
+
+    const body = document.createElement("div");
+    body.className = "review-comment-body";
+
+    const header = document.createElement("div");
+    header.className = "review-comment-header";
+
+    const author = document.createElement("strong");
+    author.textContent = comment.author?.login ?? "GitHub user";
+    header.append(author);
+
+    const meta = document.createElement("span");
+    meta.textContent = formatReviewCommentDate(comment.submittedAt);
+    header.append(meta);
+
+    const badge = document.createElement("span");
+    badge.className = "review-comment-badge";
+    badge.textContent = "GitHub";
+    header.append(badge);
+
+    const text = document.createElement("p");
+    text.textContent = comment.body;
+
+    body.append(header, text);
+    item.append(avatar, body);
+    thread.append(item);
+  }
+
+  return thread;
+}
+
 function colorizeFileTreeStats(host: HTMLElement) {
   const container = host.querySelector("file-tree-container");
   const root = container?.shadowRoot;
@@ -615,12 +788,20 @@ function FileTreePane(props: {
         [data-item-section='content'] {
           align-items: center;
           display: inline-flex;
+          flex: 1 1 auto;
           line-height: 1.25;
+          max-width: 100%;
           min-width: 0;
+          overflow: hidden;
         }
 
         [data-item-section='content'] [data-truncate-content] {
+          display: block;
           line-height: inherit;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         [data-item-section='decoration'] {
@@ -765,10 +946,11 @@ function BrowserBar(props: {
   onUpdatePreferences: (preferences: Partial<DiffViewPreferences>) => void;
   preferences: DiffViewPreferences;
   root: string | undefined;
+  source: ReviewSource | undefined;
 }) {
   let settingsButton: HTMLButtonElement | undefined;
   let settingsPopover: HTMLDivElement | undefined;
-  const label = createMemo(() => repositoryName(props.root));
+  const label = createMemo(() => sourceLabel(props.root, props.source));
   const isDesktopShell = typeof window !== "undefined" && "__electrobun" in window;
   const actionDisabled = () => !props.root;
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -803,7 +985,10 @@ function BrowserBar(props: {
           <path d="M16 5 29 27H3L16 5Z" fill="currentColor" />
           <path d="M16 14 22 24H10L16 14Z" fill="var(--browser-bg)" />
         </svg>
-        <span title={props.root ?? "Loading repository"}>{label()}</span>
+        <span title={sourceTitle(props.root, props.source)}>{label()}</span>
+        <Show when={props.source?.type === "pull-request"}>
+          <span class="browser-source-pill">Read-only PR</span>
+        </Show>
       </div>
       <div class="browser-review-shortcuts" aria-label="Review keyboard shortcuts">
         <span class="browser-shortcut-item">
@@ -950,11 +1135,12 @@ function DiffCodeView(props: {
   onToggleViewed: (file: ChangedFile, isViewed: boolean) => void;
   preferences: DiffViewPreferences;
   previewFile: RepositoryFile | null;
+  reviewComments: ReadonlyArray<PullRequestReviewComment>;
   scrollTarget: ScrollTarget | null;
   viewed: Record<string, string>;
 }) {
   let host: HTMLDivElement | undefined;
-  let codeView: CodeView | undefined;
+  let codeView: CodeView<ReviewAnnotationMetadata> | undefined;
   let navigationCorrectionId = 0;
   let stopScrollPerfBenchmark: (() => void) | undefined;
   let scrollPerfBenchmarkStarted = false;
@@ -972,8 +1158,12 @@ function DiffCodeView(props: {
       collapsed: props.collapsed,
       files: props.files,
       previewFile: props.previewFile,
+      reviewComments: props.reviewComments,
       viewed: props.viewed,
     }),
+  );
+  const reviewCommentsById = createMemo(
+    () => new Map(props.reviewComments.map((comment) => [comment.id, comment])),
   );
   function firstItemIdForPath(path: string) {
     const file = props.files.find((candidate) => candidate.path === path);
@@ -1128,6 +1318,8 @@ function DiffCodeView(props: {
         lineDiffType: "word-alt",
         maxLineDiffLength: 800,
         overflow: props.preferences.wordWrap ? "wrap" : "scroll",
+        renderAnnotation: (annotation) =>
+          createReviewAnnotation(annotation.metadata, reviewCommentsById()),
         renderCustomHeader: (_fileDiff, context) => {
           const metadata = buildItems().itemMetadata.get(context.item.id);
           if (!metadata) return undefined;
@@ -1149,7 +1341,7 @@ function DiffCodeView(props: {
         themeType: "system",
         tokenizeMaxLength: 100_000,
         unsafeCSS: codeViewUnsafeCSS,
-      }) satisfies CodeViewOptions<undefined>,
+      }) satisfies CodeViewOptions<ReviewAnnotationMetadata>,
   );
 
   onMount(() => {
@@ -1320,6 +1512,7 @@ function DeltaApp() {
       <BrowserBar
         preferences={preferences()}
         root={state()?.root}
+        source={state()?.source}
         onOpenRepository={openRepository}
         onToggleDiffStyle={toggleDiffStyle}
         onUpdatePreferences={updatePreferences}
@@ -1495,6 +1688,7 @@ function DeltaApp() {
               onToggleViewed={toggleViewed}
               preferences={preferences()}
               previewFile={previewFile()}
+              reviewComments={state()?.reviewComments ?? []}
               scrollTarget={scrollTarget()}
               viewed={viewed()}
             />
