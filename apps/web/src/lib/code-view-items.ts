@@ -1,6 +1,20 @@
-import { parsePatchFiles, type CodeViewItem, type FileDiffMetadata } from "@pierre/diffs";
+import {
+  parsePatchFiles,
+  type CodeViewItem,
+  type DiffLineAnnotation,
+  type FileDiffMetadata,
+} from "@pierre/diffs";
 
-import type { ChangedFile, DiffSection, RepositoryFile } from "@/lib/repository";
+import type {
+  ChangedFile,
+  DiffSection,
+  PullRequestReviewComment,
+  RepositoryFile,
+} from "@/lib/repository";
+
+export type ReviewAnnotationMetadata = {
+  commentIds: ReadonlyArray<string>;
+};
 
 export type DiffItemMetadata = {
   file: ChangedFile;
@@ -13,13 +27,14 @@ export type DiffItemMetadata = {
 export type CodeViewItemModel = {
   fileStartItemIdByPath: Map<string, string>;
   itemMetadata: Map<string, DiffItemMetadata>;
-  items: CodeViewItem[];
+  items: CodeViewItem<ReviewAnnotationMetadata>[];
 };
 
 export type CodeViewItemModelInput = {
   collapsed: ReadonlySet<string>;
   files: ReadonlyArray<ChangedFile>;
   previewFile: RepositoryFile | null;
+  reviewComments: ReadonlyArray<PullRequestReviewComment>;
   viewed: Readonly<Record<string, string>>;
 };
 
@@ -113,13 +128,30 @@ export function parseSectionDiff(file: ChangedFile, section: DiffSection): FileD
   return parsedDiff;
 }
 
+function buildReviewCommentAnnotations(
+  file: ChangedFile,
+  section: DiffSection,
+  reviewComments: ReadonlyArray<PullRequestReviewComment>,
+): DiffLineAnnotation<ReviewAnnotationMetadata>[] | undefined {
+  const annotations = reviewComments
+    .filter((comment) => comment.filePath === file.path)
+    .map<DiffLineAnnotation<ReviewAnnotationMetadata>>((comment) => ({
+      lineNumber: comment.lineNumber,
+      metadata: { commentIds: [comment.id] },
+      side: comment.side,
+    }));
+
+  return section.kind === "pull-request" && annotations.length > 0 ? annotations : undefined;
+}
+
 export function buildCodeViewItemModel({
   collapsed,
   files,
   previewFile,
+  reviewComments,
   viewed,
 }: CodeViewItemModelInput): CodeViewItemModel {
-  const items: CodeViewItem[] = [];
+  const items: CodeViewItem<ReviewAnnotationMetadata>[] = [];
   const fileStartItemIdByPath = new Map<string, string>();
   const itemMetadata = new Map<string, DiffItemMetadata>();
 
@@ -158,6 +190,7 @@ export function buildCodeViewItemModel({
         fileStartItemIdByPath.set(file.path, id);
       }
       items.push({
+        annotations: buildReviewCommentAnnotations(file, section, reviewComments),
         collapsed: isCollapsed,
         fileDiff,
         id,

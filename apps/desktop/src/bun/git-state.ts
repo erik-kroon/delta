@@ -11,6 +11,7 @@ import type {
   GitFileStatus,
   HistoryEntry,
   OpenRepositoryTarget,
+  PullRequestReviewComment,
   RepositoryFile,
   RepositoryHistory,
   RepositoryState,
@@ -52,6 +53,25 @@ type GitHubPullRequestDetails = {
   title?: string;
 };
 
+type GitHubReviewComment = {
+  body?: string;
+  created_at?: string;
+  html_url?: string;
+  id?: number | string;
+  line?: number;
+  original_line?: number;
+  original_start_line?: number;
+  path?: string;
+  side?: string;
+  start_line?: number;
+  start_side?: string;
+  user?: {
+    avatar_url?: string;
+    html_url?: string;
+    login?: string;
+  };
+};
+
 function fingerprint(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
@@ -65,11 +85,15 @@ async function execGit(repoPath: string, args: string[]) {
 }
 
 async function execGhJson(args: string[]) {
-  const { stdout } = await execFileAsync("gh", args, {
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024 * 64,
-  });
-  return JSON.parse(stdout) as unknown;
+  try {
+    const { stdout } = await execFileAsync("gh", args, {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024 * 64,
+    });
+    return JSON.parse(stdout) as unknown;
+  } catch (caught) {
+    throw normalizeGhError(caught);
+  }
 }
 
 async function execGitBuffer(repoPath: string, args: string[]) {
@@ -234,6 +258,80 @@ export function githubRemoteMatchesPullRequest(
       remote.repo.toLowerCase() === pullRequest.repo.toLowerCase()
     );
   });
+}
+
+function normalizeGhError(caught: unknown) {
+  const code = caught && typeof caught === "object" ? (caught as { code?: string }).code : "";
+  const stderr =
+    caught &&
+    typeof caught === "object" &&
+    typeof (caught as { stderr?: unknown }).stderr === "string"
+      ? (caught as { stderr: string }).stderr
+      : "";
+  const message = caught instanceof Error ? caught.message : String(caught);
+  const text = `${stderr}\n${message}`.toLowerCase();
+
+  if (code === "ENOENT") {
+    return new Error("GitHub CLI (gh) is not installed or is not available on PATH.");
+  }
+
+  if (
+    text.includes("not logged into") ||
+    text.includes("authentication") ||
+    text.includes("authenticate") ||
+    text.includes("requires authentication") ||
+    text.includes("bad credentials")
+  ) {
+    return new Error("GitHub CLI (gh) is not authenticated. Run gh auth login, then try again.");
+  }
+
+  return new Error("GitHub CLI (gh) could not read the pull request.");
+}
+
+function fromGitHubReviewSide(side: string | undefined): PullRequestReviewComment["side"] {
+  return side === "LEFT" ? "deletions" : "additions";
+}
+
+function isGitHubReviewSide(side: string | undefined) {
+  return side === "LEFT" || side === "RIGHT";
+}
+
+function firstNumber(...values: Array<unknown>) {
+  return values.find((value): value is number => typeof value === "number");
+}
+
+export function normalizeGitHubReviewComment(
+  comment: GitHubReviewComment,
+): PullRequestReviewComment | null {
+  const lineNumber = firstNumber(comment.line, comment.original_line);
+  if (lineNumber == null || !comment.path || !comment.body || comment.id == null) {
+    return null;
+  }
+
+  const side = fromGitHubReviewSide(comment.side);
+  const startLineNumber = firstNumber(comment.start_line, comment.original_start_line);
+  const startSide = isGitHubReviewSide(comment.start_side)
+    ? fromGitHubReviewSide(comment.start_side)
+    : undefined;
+  const hasRange =
+    startLineNumber != null && (startLineNumber !== lineNumber || (startSide ?? side) !== side);
+
+  return {
+    author: {
+      avatarUrl: comment.user?.avatar_url,
+      login: comment.user?.login || "GitHub user",
+      url: comment.user?.html_url,
+    },
+    body: comment.body,
+    filePath: comment.path,
+    id: `github:${comment.id}`,
+    lineNumber,
+    side,
+    ...(hasRange ? { startLineNumber } : {}),
+    ...(hasRange && startSide != null && startSide !== side ? { startSide } : {}),
+    submittedAt: comment.created_at,
+    url: comment.html_url,
+  };
 }
 
 function parseStatus(raw: string): StatusItem[] {
@@ -705,6 +803,23 @@ async function readPullRequestFiles(pullRequest: GitHubPullRequestUrl) {
     : (pages as GitHubPullRequestFile[]);
 }
 
+async function readPullRequestComments(pullRequest: GitHubPullRequestUrl) {
+  const pages = (await execGhJson([
+    "api",
+    "--paginate",
+    "--slurp",
+    `repos/${pullRequest.owner}/${pullRequest.repo}/pulls/${pullRequest.number}/comments?per_page=100`,
+  ])) as GitHubReviewComment[] | GitHubReviewComment[][];
+
+  const comments = Array.isArray(pages[0])
+    ? (pages as GitHubReviewComment[][]).flat()
+    : (pages as GitHubReviewComment[]);
+
+  return comments
+    .map((comment) => normalizeGitHubReviewComment(comment))
+    .filter((comment): comment is PullRequestReviewComment => comment != null);
+}
+
 function patchForPullRequestFile(file: GitHubPullRequestFile) {
   if (file.patch) return file.patch;
 
@@ -732,15 +847,17 @@ async function readPullRequestState(
 
   let details: GitHubPullRequestDetails;
   let pullRequestFiles: GitHubPullRequestFile[];
+  let reviewComments: PullRequestReviewComment[];
 
   try {
-    [details, pullRequestFiles] = await Promise.all([
+    [details, pullRequestFiles, reviewComments] = await Promise.all([
       readPullRequestDetails(pullRequest),
       readPullRequestFiles(pullRequest),
+      readPullRequestComments(pullRequest),
     ]);
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : String(caught);
-    throw new Error(`Unable to read GitHub pull request files with gh: ${message}`);
+    throw new Error(`Unable to read GitHub pull request with gh. ${message}`);
   }
 
   const files = pullRequestFiles
@@ -779,6 +896,7 @@ async function readPullRequestState(
     files,
     generatedAt: Date.now(),
     launchPath,
+    reviewComments,
     root: adapter.root,
     source: {
       baseRefOid: details.base?.sha,

@@ -8,6 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 
 import {
   githubRemoteMatchesPullRequest,
+  normalizeGitHubReviewComment,
   normalizePullRequestFileStatus,
   parseGitHubPullRequestUrl,
   readDiffSectionContent,
@@ -235,4 +236,69 @@ test("normalizes GitHub pull request file statuses", () => {
   expect(normalizePullRequestFileStatus("renamed")).toBe("renamed");
   expect(normalizePullRequestFileStatus("modified")).toBe("modified");
   expect(normalizePullRequestFileStatus("changed")).toBe("modified");
+});
+
+test("normalizes GitHub review comments onto right-side lines", () => {
+  expect(
+    normalizeGitHubReviewComment({
+      body: "Looks good.",
+      created_at: "2026-05-19T10:00:00Z",
+      html_url: "https://github.com/pierre/delta/pull/42#discussion_r1",
+      id: 1,
+      line: 12,
+      path: "src/app.ts",
+      side: "RIGHT",
+      user: {
+        avatar_url: "https://github.com/reviewer.png",
+        html_url: "https://github.com/reviewer",
+        login: "reviewer",
+      },
+    }),
+  ).toEqual({
+    author: {
+      avatarUrl: "https://github.com/reviewer.png",
+      login: "reviewer",
+      url: "https://github.com/reviewer",
+    },
+    body: "Looks good.",
+    filePath: "src/app.ts",
+    id: "github:1",
+    lineNumber: 12,
+    side: "additions",
+    submittedAt: "2026-05-19T10:00:00Z",
+    url: "https://github.com/pierre/delta/pull/42#discussion_r1",
+  });
+});
+
+test("normalizes GitHub review comment ranges with left-side starts", () => {
+  expect(
+    normalizeGitHubReviewComment({
+      body: "This range crosses sides.",
+      id: 2,
+      line: 20,
+      path: "src/app.ts",
+      side: "RIGHT",
+      start_line: 18,
+      start_side: "LEFT",
+      user: { login: "reviewer" },
+    }),
+  ).toMatchObject({
+    filePath: "src/app.ts",
+    id: "github:2",
+    lineNumber: 20,
+    side: "additions",
+    startLineNumber: 18,
+    startSide: "deletions",
+  });
+});
+
+test("drops GitHub review comments without line metadata", () => {
+  expect(
+    normalizeGitHubReviewComment({
+      body: "Outdated without usable line.",
+      id: 3,
+      path: "src/app.ts",
+      side: "RIGHT",
+    }),
+  ).toBeNull();
 });

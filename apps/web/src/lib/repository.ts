@@ -31,6 +31,25 @@ export type ChangedFile = {
   status: GitFileStatus;
 };
 
+export type ReviewCommentSide = "additions" | "deletions";
+
+export type PullRequestReviewComment = {
+  author?: {
+    avatarUrl?: string;
+    login: string;
+    url?: string;
+  };
+  body: string;
+  filePath: string;
+  id: string;
+  lineNumber: number;
+  side: ReviewCommentSide;
+  startLineNumber?: number;
+  startSide?: ReviewCommentSide;
+  submittedAt?: string;
+  url?: string;
+};
+
 export type ReviewSource =
   | {
       type: "working-tree";
@@ -74,6 +93,7 @@ export type RepositoryState = {
   files: ReadonlyArray<ChangedFile>;
   generatedAt: number;
   launchPath: string;
+  reviewComments?: ReadonlyArray<PullRequestReviewComment>;
   root: string;
   source: ReviewSource;
   treeFiles: ReadonlyArray<string>;
@@ -221,6 +241,22 @@ export const samplePullRequestRepositoryState: RepositoryState = {
   ],
   generatedAt: Date.now(),
   launchPath: "browser-preview",
+  reviewComments: [
+    {
+      author: {
+        avatarUrl: "https://github.com/github.png",
+        login: "reviewer",
+        url: "https://github.com/reviewer",
+      },
+      body: "This existing GitHub review comment is read-only in Delta.",
+      filePath: "apps/web/src/lib/delta-client.ts",
+      id: "github:sample-pr-comment",
+      lineNumber: 13,
+      side: "additions",
+      submittedAt: "2026-05-19T10:00:00Z",
+      url: "https://github.com/pierre/delta/pull/42#discussion_r1",
+    },
+  ],
   root: "browser-preview",
   source: {
     baseRefOid: "4444444444444444444444444444444444444444",

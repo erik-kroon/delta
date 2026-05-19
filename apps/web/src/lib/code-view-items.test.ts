@@ -55,6 +55,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: new Set(),
       files: [file],
       previewFile: null,
+      reviewComments: [],
       viewed: {},
     });
 
@@ -83,6 +84,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: new Set([file.path]),
       files: [file],
       previewFile: null,
+      reviewComments: [],
       viewed: {},
     });
 
@@ -106,6 +108,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: new Set(),
       files: [file],
       previewFile: null,
+      reviewComments: [],
       viewed: { [file.path]: file.fingerprint },
     });
 
@@ -149,6 +152,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: new Set(),
       files: [file],
       previewFile: null,
+      reviewComments: [],
       viewed: {},
     });
     const item = model.items[0];
@@ -192,6 +196,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: new Set(),
       files: [file],
       previewFile: null,
+      reviewComments: [],
       viewed: {},
     });
 
@@ -219,6 +224,7 @@ describe("buildCodeViewItemModel", () => {
       collapsed: new Set(),
       files: [changedFile()],
       previewFile,
+      reviewComments: [],
       viewed: {},
     });
 
@@ -248,6 +254,7 @@ describe("buildCodeViewItemModel", () => {
         fingerprint: "binary-preview",
         path: "assets/logo.png",
       },
+      reviewComments: [],
       viewed: {},
     });
 
@@ -261,6 +268,45 @@ describe("buildCodeViewItemModel", () => {
       type: "file",
       version: "binary-preview:binary",
     });
+  });
+});
+
+describe("review comment annotations", () => {
+  it("projects GitHub review comments onto pull request diff lines", () => {
+    const pullRequestSection = section("src/app.ts:pull-request:42", "pull-request", stagedPatch);
+    const file = changedFile({
+      sections: [pullRequestSection],
+    });
+    const model = buildCodeViewItemModel({
+      collapsed: new Set(),
+      files: [file],
+      previewFile: null,
+      reviewComments: [
+        {
+          body: "Existing comment",
+          filePath: "src/app.ts",
+          id: "github:1",
+          lineNumber: 3,
+          side: "additions",
+        },
+        {
+          body: "Other file",
+          filePath: "src/other.ts",
+          id: "github:2",
+          lineNumber: 1,
+          side: "deletions",
+        },
+      ],
+      viewed: {},
+    });
+
+    expect(model.items[0]?.type === "diff" ? model.items[0].annotations : undefined).toEqual([
+      {
+        lineNumber: 3,
+        metadata: { commentIds: ["github:1"] },
+        side: "additions",
+      },
+    ]);
   });
 });
 
