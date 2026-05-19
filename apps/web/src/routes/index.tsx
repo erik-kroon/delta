@@ -49,6 +49,7 @@ const diffViewPreferencesStorageKey = "delta:diff-view-preferences";
 
 const sectionLabel: Record<DiffSection["kind"], string> = {
   commit: "Commit",
+  "pull-request": "Pull request",
   staged: "Staged",
   unstaged: "Unstaged",
 };

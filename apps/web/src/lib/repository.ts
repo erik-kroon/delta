@@ -1,4 +1,4 @@
-export type DiffSectionKind = "commit" | "staged" | "unstaged";
+export type DiffSectionKind = "commit" | "pull-request" | "staged" | "unstaged";
 
 export type DiffSection = {
   binary: boolean;
@@ -24,6 +24,15 @@ export type ReviewSource =
   | {
       ref: string;
       type: "commit";
+    }
+  | {
+      baseRefOid?: string;
+      headRefOid?: string;
+      number?: number;
+      repository?: string;
+      title?: string;
+      type: "pull-request";
+      url: string;
     };
 
 export type OpenRepositoryTarget = "finder" | "zed" | "ghostty";
@@ -92,6 +101,18 @@ index 0000000..3333333
 +
 +export type RepositoryState = { files: ChangedFile[] };`;
 
+const samplePullRequestPatch = `diff --git a/apps/web/src/lib/delta-client.ts b/apps/web/src/lib/delta-client.ts
+index 4444444..5555555 100644
+--- a/apps/web/src/lib/delta-client.ts
++++ b/apps/web/src/lib/delta-client.ts
+@@ -10,7 +10,7 @@ type DeltaClient = {
+   getRepositoryFile: (path: string, source?: ReviewSource) => Promise<RepositoryFile>;
+-  getRepositoryState: () => Promise<RepositoryState>;
++  getRepositoryState: (source?: ReviewSource) => Promise<RepositoryState>;
+   openRepository: (path: string, target: OpenRepositoryTarget) => Promise<void>;
+   showInFolder: (path: string) => Promise<void>;
+ };`;
+
 export const sampleRepositoryFiles: Record<string, RepositoryFile> = {
   ".gitignore": {
     binary: false,
@@ -158,4 +179,35 @@ export const sampleRepositoryState: RepositoryState = {
     "package.json",
     "README.md",
   ],
+};
+
+export const samplePullRequestRepositoryState: RepositoryState = {
+  files: [
+    {
+      fingerprint: "sample-pr-delta-client",
+      path: "apps/web/src/lib/delta-client.ts",
+      sections: [
+        {
+          binary: false,
+          id: "sample-pr-delta-client:pull-request",
+          kind: "pull-request",
+          patch: samplePullRequestPatch,
+        },
+      ],
+      status: "modified",
+    },
+  ],
+  generatedAt: Date.now(),
+  launchPath: "browser-preview",
+  root: "browser-preview",
+  source: {
+    baseRefOid: "4444444444444444444444444444444444444444",
+    headRefOid: "5555555555555555555555555555555555555555",
+    number: 42,
+    repository: "pierre/delta",
+    title: "Add pull request review source",
+    type: "pull-request",
+    url: "https://github.com/pierre/delta/pull/42",
+  },
+  treeFiles: ["apps/web/src/lib/delta-client.ts"],
 };
